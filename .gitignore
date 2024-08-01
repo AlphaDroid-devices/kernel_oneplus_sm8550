@@ -97,6 +97,7 @@ modules.order
 !.gitattributes
 !.gitignore
 !.mailmap
+!.gitmodules
 
 #
 # Generated include files
@@ -168,3 +169,6 @@ arch/*/boot/dts/vendor
 
 # Documentation toolchain
 sphinx_*/
+
+# KernelSU
+KernelSU
