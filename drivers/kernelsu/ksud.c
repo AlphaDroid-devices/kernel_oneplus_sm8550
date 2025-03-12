@@ -65,21 +65,25 @@ bool ksu_execveat_hook __read_mostly = true;
 bool ksu_input_hook __read_mostly = true;
 
 
+#ifdef CONFIG_KSU_SUSFS_SUS_SU
+bool susfs_is_sus_su_ready = false;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_SU
+
 u32 ksu_devpts_sid;
 
 #ifdef CONFIG_COMPAT
 bool ksu_is_compat __read_mostly = false;
 #endif
 
-void on_post_fs_data(void)
+void ksu_on_post_fs_data(void)
 {
 	static bool done = false;
 	if (done) {
-		pr_info("on_post_fs_data already done\n");
+		pr_info("ksu_on_post_fs_data already done\n");
 		return;
 	}
 	done = true;
-	pr_info("on_post_fs_data!\n");
+	pr_info("ksu_on_post_fs_data!\n");
 	ksu_load_allow_list();
 	// sanity check, this may influence the performance
 	stop_input_hook();
@@ -203,7 +207,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
 					first_arg);
 				if (!strcmp(first_arg, "second_stage")) {
 					pr_info("/system/bin/init second_stage executed\n");
-					apply_kernelsu_rules();
+					ksu_apply_kernelsu_rules();
 					init_second_stage_executed = true;
 					ksu_android_ns_fs_check();
 				}
@@ -227,7 +231,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
 				pr_info("/init first arg: %s\n", first_arg);
 				if (!strcmp(first_arg, "--second-stage")) {
 					pr_info("/init second_stage executed\n");
-					apply_kernelsu_rules();
+					ksu_apply_kernelsu_rules();
 					init_second_stage_executed = true;
 					ksu_android_ns_fs_check();
 				}
@@ -264,7 +268,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
 					    (!strcmp(env_value, "1") ||
 					     !strcmp(env_value, "true"))) {
 						pr_info("/init second_stage executed\n");
-						apply_kernelsu_rules();
+						ksu_apply_kernelsu_rules();
 						init_second_stage_executed =
 							true;
 						ksu_android_ns_fs_check();
@@ -279,7 +283,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
 		first_app_process = false;
 		pr_info("exec app_process, /data prepared, second_stage: %d\n",
 			init_second_stage_executed);
-		on_post_fs_data(); // we keep this for old ksud
+		ksu_on_post_fs_data(); // we keep this for old ksud
 		stop_execve_hook();
 	}
 
@@ -396,7 +400,7 @@ int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
 	if (orig_read) {
 		fops_proxy.read = read_proxy;
 	}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 16, 0) 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 16, 0)
 	orig_read_iter = file->f_op->read_iter;
 	if (orig_read_iter) {
 		fops_proxy.read_iter = read_iter_proxy;
@@ -476,9 +480,9 @@ bool ksu_is_safe_mode()
 	return false;
 }
 
-/* 
+/*
  * ksu_handle_execve_ksud, execve_ksud handler for non kprobe
- * adapted from sys_execve_handler_pre 
+ * adapted from sys_execve_handler_pre
  * https://github.com/tiann/KernelSU/commit/2027ac3
  */
 __maybe_unused int ksu_handle_execve_ksud(const char __user *filename_user,
@@ -502,7 +506,7 @@ __maybe_unused int ksu_handle_execve_ksud(const char __user *filename_user,
 	// this is because ksu_handle_execveat_ksud calls it filename->name
 	filename_in.name = path;
 	filename_p = &filename_in;
-    
+
 	return ksu_handle_execveat_ksud(AT_FDCWD, &filename_p, &argv, NULL, NULL);
 }
 
@@ -652,7 +656,7 @@ bool is_ksu_transition(const struct task_security_struct *old_tsec,
 
 	allowed = (!strcmp("u:r:init:s0", secdata) && new_tsec->sid == ksu_sid);
 	security_release_secctx(secdata, seclen);
-	
+
 	return allowed;
 }
 #endif
@@ -676,6 +680,10 @@ static void stop_execve_hook()
 #else
 	ksu_execveat_hook = false;
 	pr_info("stop execve_hook\n");
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_SU
+	susfs_is_sus_su_ready = true;
+	pr_info("susfs: sus_su is ready\n");
 #endif
 }
 
