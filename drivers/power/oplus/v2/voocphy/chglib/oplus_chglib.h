@@ -88,6 +88,7 @@ struct vphy_chip {
 	struct work_struct send_adapter_id_work;
 	struct work_struct send_absent_notify_work;
 	struct work_struct err_report_work;
+	struct work_struct i2c_err_report_work;
 	bool led_on;
 	bool is_pd_svooc_adapter;
 	bool is_abnormal_pd_svooc_adapter;
@@ -140,6 +141,7 @@ int oplus_chglib_push_break_code(struct device *dev, int code);
 struct vphy_chip *oplus_chglib_register_vphy(struct device *dev,
 					     struct hw_vphy_info *vinf);
 void oplus_chglib_creat_ic_err(struct device *dev, int type);
+void oplus_chglib_creat_i2c_err(struct device *dev);
 int oplus_chglib_get_cc_detect(struct device *dev);
 
 

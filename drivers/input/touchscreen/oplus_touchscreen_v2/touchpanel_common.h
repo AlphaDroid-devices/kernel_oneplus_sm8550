@@ -69,6 +69,7 @@
 #define HEART			17
 #define S_GESTURE		18 /* new project not use this gesture type*/
 #define PENDETECT		18
+#define WATERPROOF_RUS_BIT	7
 
 #define KEY_GESTURE_START 246
 
@@ -90,6 +91,7 @@
 #define HEALTH_REPORT_RST_PARITY    "parity_rst"
 #define HEALTH_REPORT_RST_WD        "wd_rst"
 #define HEALTH_REPORT_RST_OTHER     "other_rst"
+#define HEALTH_REPORT_GLOVE_ENTER	"glove_enterTimes"
 
 #define FINGERPRINT_DOWN_DETECT 0X0f
 #define FINGERPRINT_UP_DETECT 0X1f
@@ -208,7 +210,13 @@ typedef enum {
 	MODE_PALM_TO_SLEEP,
 	MODE_WATERPROOF,
 	MODE_LEATHER_COVER,
+	MODE_AOD,
 } work_mode;
+
+typedef enum {
+	GLOVE_EXIT,
+	GLOVE_ENTER,
+} glove_status;
 
 typedef enum {
 	TP_BUS_I2C = 0,
@@ -324,6 +332,7 @@ typedef enum lcd_event_type {
 	LCD_CTL_CS_OFF,
 	LCD_CTL_IRQ_ON,
 	LCD_CTL_IRQ_OFF,
+	LCD_CTL_AOD_OFF = 0x30,
 } lcd_event_type;
 
 typedef enum {
@@ -608,6 +617,7 @@ typedef enum {
 	TYPE_PENCIL_MAXEYE = 2,
 	TYPE_PENCIL_MAXEYE_2ND = 3,
 	TYPE_PENCIL_SUNWODA = 4,
+	TYPE_PENCIL_MAXEYE_3RD = 5,
 } pencil_type;
 
 typedef enum {
@@ -778,6 +788,10 @@ struct monitor_data {
 
 	u64 screenon_timer;
 	u64 total_screenon_time;
+
+	u64 glove_en_timer;
+	u64 total_glove_en_time;
+	u64 glove_enter_count;
 
 	int auto_test_total_times;
 	int auto_test_failed_times;
@@ -987,11 +1001,14 @@ struct touchpanel_data {
 	bool tp_data_record_support;                        /*feature used to data record when get tp log*/
 	bool suspend_work_support;                          /*feature used to support suspend work queue*/
 	int glove_enable;                                   /*control state of glove gesture*/
+	int pocket_prevent_mode;
+	bool touch_event_diasble;                           /*diasble touch event report*/
 	int leather_cover_enable;                           /*control state of leather_cover gesture*/
 	bool force_bus_ready_support;                       /*force bus ready to true afer notify*/
 	bool skip_reinit_device_support;                    /*spi need skip complete_all, prevent error in access reg*/
 	bool edge_pull_out_support;                         /*feature used to edge coordinates pull out*/
 	/******For FW update area********/
+	bool lpwg_fw_support;                               /*feature to support low power wakeup gesture firmware and effect firmware are separated.*/
 	bool loading_fw;                                    /*touchpanel FW updating*/
 	int firmware_update_type;                           /*firmware_update_type: 0=check firmware version 1=force update; 2=for FAE debug*/
 	struct completion fw_complete;						/*completion for control fw update*/
@@ -1008,6 +1025,7 @@ struct touchpanel_data {
 	struct engineer_test_operations   *engineer_ops;     /*call_back function*/
 	bool auto_test_need_cal_support;
 	bool sportify_aod_gesture_support;
+	bool aod_gesture_support;
 	/******For button key area********/
 	/*every bit declear one state of key "reserve(keycode)|home(keycode)|menu(keycode)|back(keycode)"*/
 	u8   vk_bitmap;
@@ -1037,6 +1055,8 @@ struct touchpanel_data {
 	struct gesture_info    gesture;                     /*gesture related info*/
 	int gesture_enable_indep;                         /*independent control state of black gesture*/
 
+	bool in_aod_flag;
+	bool out_aod_flag;
 	/******For fingerprint area********/
 	int fp_enable;                                      /*underscreen fingerprint enable or not*/
 	int fp_quick_start_data;                            /*for fingerprint quick start featrue*/
@@ -1335,6 +1355,7 @@ struct oplus_touchpanel_operations {
 	void (*freq_hop_trigger)(void *chip_data); /*trigger frequency-hopping*/
 	void (*force_water_mode)(void *chip_data, bool enable); /*force enter water mode*/
 	void (*get_water_mode)(void *chip_data); /*force enter water mode*/
+	void (*get_glove_mode)(void *chip_data, int *enable); /*get glove mode parameters*/
 	void (*set_noise_modetest)(void *chip_data, bool enable);
 	uint8_t (*get_noise_modetest)(void *chip_data);
 	/*If the tp ic need do something, use this!*/

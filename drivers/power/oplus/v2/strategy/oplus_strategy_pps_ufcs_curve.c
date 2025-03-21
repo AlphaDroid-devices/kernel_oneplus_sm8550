@@ -668,6 +668,10 @@ static int puc_strategy_get_data(struct oplus_chg_strategy *strategy, void *ret)
 		return -EINVAL;
 	}
 	puc = (struct puc_strategy *)strategy;
+	if (puc->curve == NULL) {
+		chg_err("curve is NULL\n");
+		return -EINVAL;
+	}
 
 	if (puc->curr_level >= puc->curve->num)
 		goto out;

@@ -78,6 +78,7 @@ struct sc8547d_device {
 	struct mms_subscribe *wired_subs;
 	struct mutex i2c_rw_lock;
 	struct mutex chip_lock;
+	struct mutex adc_freeze_lock;
 	atomic_t suspended;
 	atomic_t i2c_err_count;
 	struct wakeup_source *chip_ws;
@@ -99,6 +100,7 @@ struct sc8547d_device {
 	bool vac_support;
 	bool ic_sc8547d;
 	bool enable_otg;
+	bool always_otg_en;
 
 	struct work_struct ufcs_regdump_work;
 	struct work_struct otg_enabled_work;
@@ -412,17 +414,9 @@ static int sc8547d_read_byte(struct sc8547d_device *chip, u8 addr, u8 *data)
 	int rc = 0;
 
 	mutex_lock(&chip->i2c_rw_lock);
-	rc = i2c_master_send(chip->client, &addr_buf, 1);
-	if (rc < 1) {
-		chg_err("write 0x%04x error, rc = %d \n", addr, rc);
-		rc = rc < 0 ? rc : -EIO;
-		goto error;
-	}
-
-	rc = i2c_master_recv(chip->client, data, 1);
-	if (rc < 1) {
+	rc = i2c_smbus_read_i2c_block_data(chip->client, addr_buf, 1, data);
+	if (rc < 0) {
 		chg_err("read 0x%04x error, rc = %d \n", addr, rc);
-		rc = rc < 0 ? rc : -EIO;
 		goto error;
 	}
 	mutex_unlock(&chip->i2c_rw_lock);
@@ -432,29 +426,37 @@ error:
 	return rc;
 }
 
-static int sc8547d_read_data(struct sc8547d_device *chip, u8 addr, u8 *buf,
-			     int len)
+#define I2C_SMBUS_BLOCK_MAX	32
+static int sc8547d_read_data(struct sc8547d_device *chip, u8 addr, u8 *buf, int len)
 {
 	u8 addr_buf = addr & 0xff;
 	int rc = 0;
 
 	mutex_lock(&chip->i2c_rw_lock);
-	rc = i2c_master_send(chip->client, &addr_buf, 1);
-	if (rc < 1) {
-		chg_err("read 0x%04x error, rc=%d\n", addr, rc);
-		rc = rc < 0 ? rc : -EIO;
-		goto error;
+	if (len <= I2C_SMBUS_BLOCK_MAX) {
+		rc = i2c_smbus_read_i2c_block_data(chip->client, addr_buf, len, buf);
+		if (rc < 0) {
+			chg_err("read 0x%04x error, rc=%d\n", addr, rc);
+			goto error;
+		}
+	} else {
+		rc = i2c_master_send(chip->client, &addr_buf, 1);
+		if (rc < 1) {
+			chg_err("write 0x%04x error, rc=%d\n", addr, rc);
+			rc = rc < 0 ? rc : -EIO;
+			goto error;
+		}
+
+		rc = i2c_master_recv(chip->client, buf, len);
+		if (rc < len) {
+			chg_err("read 0x%04x error, rc=%d\n", addr, rc);
+			rc = rc < 0 ? rc : -EIO;
+			goto error;
+		}
 	}
 
-	rc = i2c_master_recv(chip->client, buf, len);
-	if (rc < len) {
-		chg_err("read 0x%04x error, rc=%d\n", addr, rc);
-		rc = rc < 0 ? rc : -EIO;
-		goto error;
-	}
 	mutex_unlock(&chip->i2c_rw_lock);
 	return rc;
-
 error:
 	mutex_unlock(&chip->i2c_rw_lock);
 	return rc;
@@ -512,17 +514,21 @@ static int sc8547d_write_bit_mask(struct sc8547d_device *chip, u8 reg,
 	u8 temp = 0;
 	int rc = 0;
 
-	rc = sc8547d_read_byte(chip, reg, &temp);
-	if (rc < 0)
-		return rc;
+	mutex_lock(&chip->i2c_rw_lock);
+	rc = __sc8547_read_byte(chip->client, reg, &temp);
+	if (rc) {
+		chg_err("read failed: reg=%02X, rc=%d\n", reg, rc);
+		goto out;
+	}
 
 	temp = (data & mask) | (temp & (~mask));
 
-	rc = sc8547d_write_byte(chip, reg, temp);
-	if (rc < 0)
-		return rc;
-
-	return 0;
+	rc = __sc8547_write_byte(chip->client, reg, temp);
+	if (rc)
+		chg_err("write failed: reg=%02X, rc=%d\n", reg, rc);
+out:
+	mutex_unlock(&chip->i2c_rw_lock);
+	return rc;
 }
 
 static int sc8547_voocphy_set_predata(struct oplus_voocphy_manager *chip, u16 val)
@@ -583,8 +589,7 @@ static int sc8547_voocphy_get_adapter_info(struct oplus_voocphy_manager *chip)
 
 static void sc8547_voocphy_update_data(struct oplus_voocphy_manager *chip)
 {
-	u8 data_block[4] = { 0 };
-	int i = 0;
+	u8 data_block[10] = { 0 };
 	u8 data = 0;
 	s32 ret = 0;
 	struct sc8547d_device *dev;
@@ -599,64 +604,24 @@ static void sc8547_voocphy_update_data(struct oplus_voocphy_manager *chip)
 	sc8547_read_byte(chip->client, SC8547_REG_0F, &data);
 	chip->interrupt_flag = data;
 
-	/*parse data_block for improving time of interrupt*/
-	ret = i2c_smbus_read_i2c_block_data(chip->client, SC8547_REG_19, 4,
-					    data_block);
+	mutex_lock(&dev->adc_freeze_lock);
+	sc8547_update_bits(dev->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, SC8547_ADC_FREEZE_MASK);
+	ret = sc8547d_read_data(dev, SC8547_REG_13, data_block, 10);
+	sc8547_update_bits(dev->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, 0);
+	mutex_unlock(&dev->adc_freeze_lock);
 	if (ret < 0) {
 		sc8547_i2c_error(dev, true, true);
-		chg_err("sc8547_update_data read vsys vbat error \n");
+		chg_err("sc8547_update_data read adc error \n");
 	} else {
 		sc8547_i2c_error(dev, false, true);
 	}
-	for (i = 0; i < 4; i++) {
-		chg_debug("read vsys vbat data_block[%d] = %u\n", i,
-			data_block[i]);
-	}
+	chip->cp_ichg = (((data_block[0] & SC8547_IBUS_POL_H_MASK) << 8) | data_block[1]) * SC8547_IBUS_ADC_LSB;
+	chip->cp_vbus = (((data_block[2] & SC8547_VBUS_POL_H_MASK) << 8) | data_block[3]) * SC8547_VBUS_ADC_LSB;
+	chip->cp_vac = (((data_block[4] & SC8547_VAC_POL_H_MASK) << 8) | data_block[5]) * SC8547_VAC_ADC_LSB;
+	chip->cp_vsys = (((data_block[6] & SC8547_VOUT_POL_H_MASK) << 8) | data_block[7]) * SC8547_VOUT_ADC_LSB;
+	chip->cp_vbat = (((data_block[8] & SC8547_VBAT_POL_H_MASK) << 8) | data_block[9]) * SC8547_VBAT_ADC_LSB;
 
-	chip->cp_vsys = ((data_block[0] << 8) | data_block[1]) * SC8547_VOUT_ADC_LSB;
-	chip->cp_vbat = ((data_block[2] << 8) | data_block[3]) * SC8547_VOUT_ADC_LSB;
-
-	memset(data_block, 0, sizeof(u8) * 4);
-
-	ret = i2c_smbus_read_i2c_block_data(chip->client, SC8547_REG_13, 4,
-					    data_block);
-	if (ret < 0) {
-		sc8547_i2c_error(dev, true, true);
-		chg_err("sc8547_update_data read vsys vbat error \n");
-	} else {
-		sc8547_i2c_error(dev, false, true);
-	}
-	for (i = 0; i < 4; i++) {
-		chg_debug("read ichg vbus data_block[%d] = %u\n", i,
-			data_block[i]);
-	}
-
-	chip->cp_ichg =
-		((data_block[0] << 8) | data_block[1]) * SC8547_IBUS_ADC_LSB;
-	chip->cp_vbus = (((data_block[2] & SC8547_VBUS_POL_H_MASK) << 8) |
-			 data_block[3]) *
-			SC8547_VBUS_ADC_LSB;
-
-	memset(data_block, 0, sizeof(u8) * 4);
-
-	ret = i2c_smbus_read_i2c_block_data(chip->client, SC8547_REG_17, 2,
-					    data_block);
-	if (ret < 0) {
-		sc8547_i2c_error(dev, true, true);
-		chg_err("sc8547_update_data read vac error\n");
-	} else {
-		sc8547_i2c_error(dev, false, true);
-	}
-	for (i = 0; i < 2; i++) {
-		chg_debug("read vac data_block[%d] = %u\n", i, data_block[i]);
-	}
-
-	chip->cp_vac = (((data_block[0] & SC8547_VAC_POL_H_MASK) << 8) |
-			data_block[1]) *
-		       SC8547_VAC_ADC_LSB;
-
-	chg_info("cp_ichg = %d cp_vbus = %d, cp_vsys = %d cp_vbat = %d cp_vac = "
-		"%d int_flag = %d",
+	chg_info("cp_ichg = %d cp_vbus = %d, cp_vsys = %d cp_vbat = %d cp_vac = %d int_flag = %d",
 		chip->cp_ichg, chip->cp_vbus, chip->cp_vsys, chip->cp_vbat,
 		chip->cp_vac, chip->interrupt_flag);
 }
@@ -679,8 +644,11 @@ static int sc8547_voocphy_get_cp_ichg(struct oplus_voocphy_manager *voocphy)
 	if (cp_enable == 0)
 		return 0;
 	/*parse data_block for improving time of interrupt*/
-	ret = i2c_smbus_read_i2c_block_data(chip->client, SC8547_REG_13, 2,
-					    data_block);
+	mutex_lock(&chip->adc_freeze_lock);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, SC8547_ADC_FREEZE_MASK);
+	ret = sc8547d_read_data(chip, SC8547_REG_13, data_block, 2);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, 0);
+	mutex_unlock(&chip->adc_freeze_lock);
 	if (ret < 0) {
 		sc8547_i2c_error(chip, true, true);
 		chg_err("sc8547 read ichg error \n");
@@ -688,7 +656,7 @@ static int sc8547_voocphy_get_cp_ichg(struct oplus_voocphy_manager *voocphy)
 		sc8547_i2c_error(chip, false, true);
 	}
 
-	cp_ichg = ((data_block[0] << 8) | data_block[1]) * SC8547_IBUS_ADC_LSB;
+	cp_ichg = (((data_block[0] & SC8547_IBUS_POL_H_MASK) << 8) | data_block[1]) * SC8547_IBUS_ADC_LSB;
 	chg_info("%s cp_ichg:%d\n", chip->dev->of_node->name, cp_ichg);
 
 	return cp_ichg;
@@ -706,14 +674,17 @@ static int sc8547_get_cp_ichg(struct sc8547d_device *chip)
 	if (cp_enable == 0)
 		return 0;
 	/*parse data_block for improving time of interrupt*/
-	ret = i2c_smbus_read_i2c_block_data(chip->client, SC8547_REG_13, 2,
-					    data_block);
+	mutex_lock(&chip->adc_freeze_lock);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, SC8547_ADC_FREEZE_MASK);
+	ret = sc8547d_read_data(chip, SC8547_REG_13, data_block, 2);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, 0);
+	mutex_unlock(&chip->adc_freeze_lock);
 	if (ret < 0) {
 		chg_err("sc8547 read ichg error \n");
 		return 0;
 	}
 
-	cp_ichg = ((data_block[0] << 8) | data_block[1]) * SC8547_IBUS_ADC_LSB;
+	cp_ichg = (((data_block[0] & SC8547_IBUS_POL_H_MASK) << 8) | data_block[1]) * SC8547_IBUS_ADC_LSB;
 
 	return cp_ichg;
 }
@@ -731,8 +702,11 @@ static int sc8547_voocphy_get_cp_vbat(struct oplus_voocphy_manager *voocphy)
 	}
 
 	/*parse data_block for improving time of interrupt*/
-	ret = i2c_smbus_read_i2c_block_data(chip->client, SC8547_REG_1B, 2,
-					    data_block);
+	mutex_lock(&chip->adc_freeze_lock);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, SC8547_ADC_FREEZE_MASK);
+	ret = sc8547d_read_data(chip, SC8547_REG_1B, data_block, 2);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, 0);
+	mutex_unlock(&chip->adc_freeze_lock);
 	if (ret < 0) {
 		sc8547_i2c_error(chip, true, true);
 		chg_err("sc8547 read vbat error \n");
@@ -740,7 +714,7 @@ static int sc8547_voocphy_get_cp_vbat(struct oplus_voocphy_manager *voocphy)
 		sc8547_i2c_error(chip, false, true);
 	}
 
-	voocphy->cp_vbat = ((data_block[0] << 8) | data_block[1]) * SC8547_VBAT_ADC_LSB;
+	voocphy->cp_vbat = (((data_block[0] & SC8547_VBAT_POL_H_MASK) << 8) | data_block[1]) * SC8547_VBAT_ADC_LSB;
 
 	return voocphy->cp_vbat;
 }
@@ -751,14 +725,17 @@ static int sc8547_get_cp_vbat(struct sc8547d_device *chip)
 	s32 ret = 0;
 
 	/*parse data_block for improving time of interrupt*/
-	ret = i2c_smbus_read_i2c_block_data(chip->client, SC8547_REG_1B, 2,
-					    data_block);
+	mutex_lock(&chip->adc_freeze_lock);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, SC8547_ADC_FREEZE_MASK);
+	ret = sc8547d_read_data(chip, SC8547_REG_1B, data_block, 2);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, 0);
+	mutex_unlock(&chip->adc_freeze_lock);
 	if (ret < 0) {
 		chg_err("sc8547 read vbat error \n");
 		return 0;
 	}
 
-	return ((data_block[0] << 8) | data_block[1]) * SC8547_VBAT_ADC_LSB;
+	return (((data_block[0] & SC8547_VBAT_POL_H_MASK) << 8) | data_block[1]) * SC8547_VBAT_ADC_LSB;
 }
 
 static int sc8547_voocphy_get_cp_vbus(struct oplus_voocphy_manager *voocphy)
@@ -774,8 +751,11 @@ static int sc8547_voocphy_get_cp_vbus(struct oplus_voocphy_manager *voocphy)
 	}
 
 	/* parse data_block for improving time of interrupt */
-	ret = i2c_smbus_read_i2c_block_data(chip->client, SC8547_REG_15, 2,
-					    data_block);
+	mutex_lock(&chip->adc_freeze_lock);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, SC8547_ADC_FREEZE_MASK);
+	ret = sc8547d_read_data(chip, SC8547_REG_15, data_block, 2);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, 0);
+	mutex_unlock(&chip->adc_freeze_lock);
 	if (ret < 0) {
 		sc8547_i2c_error(chip, true, true);
 		chg_err("sc8547 read vbat error \n");
@@ -794,8 +774,11 @@ static int sc8547_get_cp_vbus(struct sc8547d_device *chip)
 	s32 ret = 0;
 
 	/* parse data_block for improving time of interrupt */
-	ret = i2c_smbus_read_i2c_block_data(chip->client, SC8547_REG_15, 2,
-					    data_block);
+	mutex_lock(&chip->adc_freeze_lock);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, SC8547_ADC_FREEZE_MASK);
+	ret = sc8547d_read_data(chip, SC8547_REG_15, data_block, 2);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, 0);
+	mutex_unlock(&chip->adc_freeze_lock);
 	if (ret < 0) {
 		chg_err("sc8547 read vbat error \n");
 		return 0;
@@ -1064,7 +1047,7 @@ static int sc8547_voocphy_set_adc_enable(struct oplus_voocphy_manager *chip,
 	}
 
 	if (enable)
-		return sc8547_write_byte(chip->client, SC8547_REG_11, 0x80);
+		return sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_EN_MASK, SC8547_ADC_EN_MASK);
 	else
 		return sc8547_write_byte(chip->client, SC8547_REG_11, 0x00);
 }
@@ -1077,7 +1060,7 @@ static int sc8547_set_adc_enable(struct sc8547d_device *chip, bool enable)
 	}
 
 	if (enable)
-		return sc8547_write_byte(chip->client, SC8547_REG_11, 0x80);
+		return sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_EN_MASK, SC8547_ADC_EN_MASK);
 	else
 		return sc8547_write_byte(chip->client, SC8547_REG_11, 0x00);
 }
@@ -1188,7 +1171,8 @@ static int sc8547_init_device(struct sc8547d_device *chip)
 	sc8547_update_bits(chip->client, SC8547_REG_09, SC8547_IBUS_UCP_RISE_MASK_MASK,
 			   (1 << SC8547_IBUS_UCP_RISE_MASK_SHIFT));
 	sc8547_write_byte(chip->client, SC8547_REG_10, 0x02); /* mask insert irq */
-
+	if (chip->always_otg_en)
+		sc8547_update_bits(chip->client, SC8547D_ADDR_OTG_EN, SC8547D_OTG_EN_MASK, 0x04);
 	return 0;
 }
 
@@ -1239,8 +1223,7 @@ static int sc8547_svooc_hw_setting(struct sc8547d_device *chip)
 	sc8547_write_byte(chip->client, SC8547_REG_05,
 			  reg_data); /*IBUS_OCP_UCP:3.6A*/
 	sc8547_write_byte(chip->client, SC8547_REG_09, 0x13); /*WD:1000ms*/
-	sc8547_write_byte(chip->client, SC8547_REG_11,
-			  0x80); /*ADC_CTRL:ADC_EN*/
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_EN_MASK, SC8547_ADC_EN_MASK); /*ADC_CTRL:ADC_EN*/
 	sc8547_write_byte(chip->client, SC8547_REG_0D, 0x70);
 	/*sc8547_write_byte(chip->client, SC8547_REG_2B, 0x81);*/ /*VOOC_CTRL,send handshake*/
 
@@ -1255,7 +1238,7 @@ static int sc8547_vooc_hw_setting(struct sc8547d_device *chip)
 	sc8547_write_byte(chip->client, SC8547_REG_04, 0x64); /*VBUS_OVP:11V*/
 	sc8547_write_byte(chip->client, SC8547_REG_05, 0x1c); /*IBUS_OCP_UCP:*/
 	sc8547_write_byte(chip->client, SC8547_REG_09, 0x93); /*WD:1000ms*/
-	sc8547_write_byte(chip->client, SC8547_REG_11, 0x80); /*ADC_CTRL:*/
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_EN_MASK, SC8547_ADC_EN_MASK); /*ADC_CTRL:ADC_EN*/
 	sc8547_write_byte(chip->client, SC8547_REG_33, 0xd1); /*Loose_det*/
 	sc8547_write_byte(chip->client, SC8547_REG_34, 0x60);
 	if (chip->use_slave_cp)
@@ -1811,8 +1794,11 @@ static void sc8547_slave_update_data(struct oplus_voocphy_manager *voocphy_mg)
 	sc8547_read_byte(chip->client, SC8547_REG_0F, &int_flag);
 
 	/*parse data_block for improving time of interrupt*/
-	ret = i2c_smbus_read_i2c_block_data(chip->client, SC8547_REG_13, 2,
-					    data_block);
+	mutex_lock(&chip->adc_freeze_lock);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, SC8547_ADC_FREEZE_MASK);
+	ret = sc8547d_read_data(chip, SC8547_REG_13, data_block, 2);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, 0);
+	mutex_unlock(&chip->adc_freeze_lock);
 	if (ret < 0) {
 		sc8547_i2c_error(chip, true, true);
 		chg_err("sc8547_update_data read vsys vbat error \n");
@@ -1822,8 +1808,7 @@ static void sc8547_slave_update_data(struct oplus_voocphy_manager *voocphy_mg)
 	for (i = 0; i < 2; i++)
 		chg_info("data_block[%d] = %u\n", i, data_block[i]);
 
-	voocphy_mg->slave_cp_ichg =
-		((data_block[0] << 8) | data_block[1]) * SC8547_IBUS_ADC_LSB;
+	voocphy_mg->slave_cp_ichg = (((data_block[0] & SC8547_IBUS_POL_H_MASK) << 8) | data_block[1]) * SC8547_IBUS_ADC_LSB;
 	chg_info("slave cp_ichg = %d int_flag = %d", voocphy_mg->slave_cp_ichg, int_flag);
 }
 
@@ -2233,7 +2218,8 @@ static void sc8547d_otg_enabled_work(struct work_struct *work)
 	} else {
 		if (chip->enable_otg)
 			sc8547_write_byte(chip->client, SC8547D_ENABLE_OTG_REG, 0x02);
-		sc8547_update_bits(chip->client, SC8547D_ADDR_OTG_EN, SC8547D_OTG_EN_MASK, 0x0);
+		if (!chip->always_otg_en)
+			sc8547_update_bits(chip->client, SC8547D_ADDR_OTG_EN, SC8547D_OTG_EN_MASK, 0x0);
 	}
 }
 static void sc8547d_ufcs_regdump_work(struct work_struct *work)
@@ -2405,7 +2391,7 @@ static int sc8547d_cp_enable(struct oplus_chg_ic_dev *ic_dev, bool en)
 		sc8547_write_byte(chip->client, SC8547_REG_05, 0xcf); /*IBUS_OCP:disable/5.7A,disable UCP*/
 		sc8547_update_bits(chip->client, SC8547_REG_08, SC8547_SS_TIMEOUT_SET_MASK, SC8547_SS_TIMEOUT_DISABLE);
 		sc8547_write_byte(chip->client, SC8547_REG_09, 0x10); /*WD:disable*/
-		sc8547_write_byte(chip->client, SC8547_REG_11, 0x80); /*ADC_CTRL:enable ADC*/
+		sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_EN_MASK, SC8547_ADC_EN_MASK); /*ADC_CTRL:enable ADC*/
 		sc8547_write_byte(chip->client, SC8547_REG_0D, 0x70); /*PMID2OUT_OVP_UVP:500mV,-100mV*/
 		sc8547_write_byte(chip->client, SC8547_REG_0C, 0x02); /*CTRL4:force VAC_OK*/
 		/*need 50ms delay between force VAC_OK and chg_enable*/
@@ -2666,7 +2652,11 @@ static int sc8547d_cp_get_vac(struct oplus_chg_ic_dev *ic_dev, int *vac)
 	if (!chip->vac_support)
 		return -ENOTSUPP;
 
-	rc = i2c_smbus_read_i2c_block_data(chip->client, SC8547_REG_17, 2, data_block);
+	mutex_lock(&chip->adc_freeze_lock);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, SC8547_ADC_FREEZE_MASK);
+	rc = sc8547d_read_data(chip, SC8547_REG_17, data_block, 2);
+	sc8547_update_bits(chip->client, SC8547_REG_11, SC8547_ADC_FREEZE_MASK, 0);
+	mutex_unlock(&chip->adc_freeze_lock);
 	if (rc < 0) {
 		sc8547_i2c_error(chip, true, true);
 		chg_err("[%s] sc8547 read vac error, rc=%d\n", chip->dev->of_node->name, rc);
@@ -2698,6 +2688,45 @@ static int sc8547d_cp_set_work_start(struct oplus_chg_ic_dev *ic_dev, bool start
 		return rc;
 	oplus_imp_node_set_active(chip->input_imp_node, start);
 	oplus_imp_node_set_active(chip->output_imp_node, start);
+
+	return 0;
+}
+
+static void sc8547d_set_ucp_disable(struct sc8547d_device *chip, bool disable)
+{
+	u8 value;
+
+	if (!chip) {
+		chg_err("chip is null\n");
+		return;
+	}
+	if (disable) {
+		/* to avoid cp ucp cause buck chg, change ucp as 100ms */
+		sc8547_read_byte(chip->client, SC8547_REG_05, &value);
+		value = value | 0x80;
+		chg_info("set 05 reg = 0x%x\n", value);
+		sc8547_write_byte(chip->client, SC8547_REG_05, value);
+	} else {
+		sc8547_read_byte(chip->client, SC8547_REG_05, &value);
+		value = value & (~0x80);
+		chg_info("set 05 reg = 0x%x\n", value);
+		sc8547_write_byte(chip->client, SC8547_REG_05, value);
+	}
+}
+
+static int sc8547d_cp_set_ucp_disable(struct oplus_chg_ic_dev *ic_dev, bool en)
+{
+	struct sc8547d_device *chip;
+
+	if (ic_dev == NULL) {
+		chg_err("oplus_chg_ic_dev is NULL");
+		return -ENODEV;
+	}
+	chip = oplus_chg_ic_get_priv_data(ic_dev);
+
+	chg_info("%s %s\n", chip->dev->of_node->name, en ? "en" : "dis");
+
+	sc8547d_set_ucp_disable(chip, en);
 
 	return 0;
 }
@@ -2813,6 +2842,9 @@ static void *sc8547d_cp_get_func(struct oplus_chg_ic_dev *ic_dev, enum oplus_chg
 		break;
 	case OPLUS_IC_FUNC_CP_SET_ADC_ENABLE:
 		func = OPLUS_CHG_IC_FUNC_CHECK(OPLUS_IC_FUNC_CP_SET_ADC_ENABLE, sc8547d_cp_adc_enable);
+		break;
+	case OPLUS_IC_FUNC_CP_SET_UCP_DISABLE:
+		func = OPLUS_CHG_IC_FUNC_CHECK(OPLUS_IC_FUNC_CP_SET_UCP_DISABLE, sc8547d_cp_set_ucp_disable);
 		break;
 	default:
 		chg_err("this func(=%d) is not supported\n", func_id);
@@ -3108,6 +3140,7 @@ static int sc8547d_driver_probe(struct i2c_client *client,
 	chip->voocphy = voocphy;
 	mutex_init(&chip->i2c_rw_lock);
 	mutex_init(&chip->chip_lock);
+	mutex_init(&chip->adc_freeze_lock);
 	i2c_set_clientdata(client, voocphy);
 	INIT_WORK(&chip->ufcs_regdump_work, sc8547d_ufcs_regdump_work);
 	INIT_WORK(&chip->otg_enabled_work, sc8547d_otg_enabled_work);
@@ -3130,9 +3163,10 @@ static int sc8547d_driver_probe(struct i2c_client *client,
 	chip->use_slave_cp = of_property_read_bool(chip->dev->of_node, "oplus,use_slave_cp");
 	chip->vac_support = of_property_read_bool(chip->dev->of_node, "oplus,vac_support");
 	chip->enable_otg = of_property_read_bool(chip->dev->of_node, "oplus,enable_otg");
-	chg_info("use_vooc_phy=%d, use_ufcs_phy=%d, use_slave_cp=%d, vac_support=%d, enable_otg=%d\n",
+	chip->always_otg_en = of_property_read_bool(chip->dev->of_node, "oplus,always_otg_en");
+	chg_info("use_vooc_phy=%d, use_ufcs_phy=%d, use_slave_cp=%d, vac_support=%d, enable_otg=%d always_otg_en=%d\n",
 		 chip->use_vooc_phy, chip->use_ufcs_phy, chip->use_slave_cp, chip->vac_support,
-		 chip->enable_otg);
+		 chip->enable_otg, chip->always_otg_en);
 
 	if (chip->use_vooc_phy) {
 		rc = sc8547_charger_choose(chip);

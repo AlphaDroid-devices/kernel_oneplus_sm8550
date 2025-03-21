@@ -41,6 +41,7 @@ struct oplus_chg_strategy_desc {
 	int (*strategy_release)(struct oplus_chg_strategy *strategy);
 	int (*strategy_init)(struct oplus_chg_strategy *strategy);
 	int (*strategy_get_data)(struct oplus_chg_strategy *strategy, void *ret);
+	int (*strategy_set_process_data)(struct oplus_chg_strategy *strategy, const char *type, unsigned long arg);
 	int (*strategy_get_metadata)(struct oplus_chg_strategy *strategy, void *ret);
 };
 
@@ -60,6 +61,7 @@ oplus_chg_strategy_alloc_by_param_head(const char *name, const char *node_name, 
 int oplus_chg_strategy_init(struct oplus_chg_strategy *strategy);
 int oplus_chg_strategy_release(struct oplus_chg_strategy *strategy);
 int oplus_chg_strategy_get_data(struct oplus_chg_strategy *strategy, void *ret);
+int oplus_chg_strategy_set_process_data(struct oplus_chg_strategy *strategy, const char *type, unsigned long arg);
 int oplus_chg_strategy_get_metadata(struct oplus_chg_strategy *strategy, void *ret);
 int oplus_chg_strategy_register(struct oplus_chg_strategy_desc *desc);
 int oplus_chg_strategy_read_data(struct device *dev,

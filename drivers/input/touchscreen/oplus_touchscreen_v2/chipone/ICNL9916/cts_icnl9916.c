@@ -1137,6 +1137,21 @@ static int cts_tcs_get_water_flag(const struct cts_device *cts_dev, u8* cmd)
     }
     return ret;
 }
+
+static int cts_tcs_set_waterproof_mode(const struct cts_device *cts_dev, int cmd)
+{
+	u8 buf[1];
+	buf[0] = cmd ? 1 : 0;
+	return cts_tcs_spi_write(cts_dev, 9, 18, buf, sizeof(buf));
+}
+
+static int cts_tcs_set_aod_mode(const struct cts_device *cts_dev, int cmd)
+{
+	u8 buf[1];
+	buf[0] = (cmd == 0) ? 0 : 1;
+	return cts_tcs_spi_write(cts_dev, 2, 89, buf, sizeof(buf));
+}
+
 /*diaphragm ckliu*/
 static int cts_tcs_set_diaphragm_lv_set(const struct cts_device *cts_dev, int cmd)
 {
@@ -1647,6 +1662,23 @@ static int cts_tcs_test_compensate_cap(struct chipone_ts_data *chip_data,
 	snprintf(data_buf, 64, "%s\n", "[CTS COMP CAP]");
 	tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
 
+	if (item_limit_type) {
+		if ((chip_data->p_cts_autotest_offset->cts_comp_cap_max == NULL)
+			|| (chip_data->p_cts_autotest_offset->cts_comp_cap_min == NULL)) {
+			TPD_INFO("<E> max or min NULL\n");
+			return -EINVAL;
+		}
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", *chip_data->p_cts_autotest_offset->cts_comp_cap_max,
+			*chip_data->p_cts_autotest_offset->cts_comp_cap_min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	} else {
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", chip_data->p_cts_test_para->test_comp_cap_max,
+			chip_data->p_cts_test_para->test_comp_cap_min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	}
+
 	cts_lock_device(cts_dev);
 	ret = cts_prepare_test(cts_dev);
 	if (ret) {
@@ -1677,16 +1709,16 @@ static int cts_tcs_test_compensate_cap(struct chipone_ts_data *chip_data,
 				*chip_data->p_cts_autotest_offset->cts_comp_cap_min);
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
+					offset = r * cts_dev->hwdata->num_col + c;
 
-					if ((cap[offset] < *chip_data->p_cts_autotest_offset->cts_comp_cap_min) &&
+					if ((cap[offset] < *chip_data->p_cts_autotest_offset->cts_comp_cap_min) ||
 						(cap[offset] > *chip_data->p_cts_autotest_offset->cts_comp_cap_max)) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Comp cap");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, cap[offset]);
 					}
@@ -1695,16 +1727,16 @@ static int cts_tcs_test_compensate_cap(struct chipone_ts_data *chip_data,
 		} else if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_NODE) {
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
-			
+					offset = r * cts_dev->hwdata->num_col + c;
+
 					if ((cap[offset] < chip_data->p_cts_autotest_offset->cts_comp_cap_min[offset])
-						&& (cap[offset] > chip_data->p_cts_autotest_offset->cts_comp_cap_max[offset])) {
+						|| (cap[offset] > chip_data->p_cts_autotest_offset->cts_comp_cap_max[offset])) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Comp cap");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, cap[offset]);
 					}
@@ -1718,16 +1750,16 @@ static int cts_tcs_test_compensate_cap(struct chipone_ts_data *chip_data,
 			(chip_data->p_cts_test_para->test_open_min != 0)) {
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
+					offset = r * cts_dev->hwdata->num_col + c;
 
-					if ((cap[offset] < chip_data->p_cts_test_para->test_comp_cap_min) &&
+					if ((cap[offset] < chip_data->p_cts_test_para->test_comp_cap_min) ||
 						(cap[offset] > chip_data->p_cts_test_para->test_comp_cap_max)) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Comp cap");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, cap[offset]);
 					}
@@ -1804,6 +1836,24 @@ static int cts_tcs_test_short(struct chipone_ts_data *chip_data,
 	snprintf(data_buf, 64, "%s\n", "[CTS SHORTDATA]");
 	tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
 
+	if (item_limit_type) {
+		if ((chip_data->p_cts_autotest_offset->cts_short_max == NULL)
+			|| (chip_data->p_cts_autotest_offset->cts_short_min == NULL)) {
+			TPD_INFO("<E> max or min NULL\n");
+			return -EINVAL;
+		}
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", *chip_data->p_cts_autotest_offset->cts_short_max,
+			*chip_data->p_cts_autotest_offset->cts_short_min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	} else {
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", chip_data->p_cts_test_para->test_short_max,
+			chip_data->p_cts_test_para->test_short_min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	}
+
+
 	cts_lock_device(cts_dev);
 	ret = cts_prepare_test(cts_dev);
 	if (ret) {
@@ -1879,21 +1929,20 @@ static int cts_tcs_test_short(struct chipone_ts_data *chip_data,
 	TPD_INFO("<I> item limit type: %d\n", item_limit_type);
 	if (item_limit_type) {
 		if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_CERTAIN) {
-			TPD_INFO("<I> [%s] max: %d, min: %d", "Shortdata",
+			TPD_INFO("<I> [%s] max: %d, min: %d", "Shortdata to GND",
 				*chip_data->p_cts_autotest_offset->cts_short_max,
 				*chip_data->p_cts_autotest_offset->cts_short_min);
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
+					offset = r * cts_dev->hwdata->num_col + c;
 
-					if ((test_result[offset] < *chip_data->p_cts_autotest_offset->cts_short_min) &&
-						(test_result[offset] > *chip_data->p_cts_autotest_offset->cts_short_max)) {
+					if (test_result[offset] < *chip_data->p_cts_autotest_offset->cts_short_min) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Shortdata");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, test_result[offset]);
 					}
@@ -1902,16 +1951,15 @@ static int cts_tcs_test_short(struct chipone_ts_data *chip_data,
 		} else if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_NODE) {
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
-			
-					if ((test_result[offset] < chip_data->p_cts_autotest_offset->cts_short_min[offset])
-						&& (test_result[offset] > chip_data->p_cts_autotest_offset->cts_short_max[offset])) {
+					offset = r * cts_dev->hwdata->num_col + c;
+
+					if (test_result[offset] < chip_data->p_cts_autotest_offset->cts_short_min[offset]) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Shortdata");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, test_result[offset]);
 					}
@@ -1925,16 +1973,15 @@ static int cts_tcs_test_short(struct chipone_ts_data *chip_data,
 			(chip_data->p_cts_test_para->test_short_min != 0)) {
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
+					offset = r * cts_dev->hwdata->num_col + c;
 
-					if ((test_result[offset] < chip_data->p_cts_test_para->test_short_min) &&
-						(test_result[offset] > chip_data->p_cts_test_para->test_short_max)) {
+					if (test_result[offset] < chip_data->p_cts_test_para->test_short_min) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Shortdata");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, test_result[offset]);
 					}
@@ -1974,18 +2021,20 @@ static int cts_tcs_test_short(struct chipone_ts_data *chip_data,
 		TPD_INFO("<I> item limit type: %d\n", item_limit_type);
 		if (item_limit_type) {
 			if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_CERTAIN) {
+				TPD_INFO("<I> [%s] max: %d, min: %d", "Shortdata between columns",
+					*chip_data->p_cts_autotest_offset->cts_short_max,
+					*chip_data->p_cts_autotest_offset->cts_short_min);
 				for (r = 0; r < cts_dev->fwdata.rows; r++) {
 					for (c = 0; c < cts_dev->fwdata.cols; c++) {
-						offset = r * cts_dev->fwdata.cols + c;
-		
-						if ((test_result[offset] < *chip_data->p_cts_autotest_offset->cts_short_min) &&
-							(test_result[offset] > *chip_data->p_cts_autotest_offset->cts_short_max)) {
+						offset = r * cts_dev->hwdata->num_col + c;
+
+						if (test_result[offset] < *chip_data->p_cts_autotest_offset->cts_short_min) {
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s failed nodes:\n", "Shortdata");
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, test_result[offset]);
 						}
@@ -1994,16 +2043,15 @@ static int cts_tcs_test_short(struct chipone_ts_data *chip_data,
 			} else if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_NODE) {
 				for (r = 0; r < cts_dev->fwdata.rows; r++) {
 					for (c = 0; c < cts_dev->fwdata.cols; c++) {
-						offset = r * cts_dev->fwdata.cols + c;
-				
-						if ((test_result[offset] < chip_data->p_cts_autotest_offset->cts_short_min[offset])
-							&& (test_result[offset] > chip_data->p_cts_autotest_offset->cts_short_max[offset])) {
+						offset = r * cts_dev->hwdata->num_col + c;
+
+						if (test_result[offset] < chip_data->p_cts_autotest_offset->cts_short_min[offset]){
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s failed nodes:\n", "Shortdata");
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, test_result[offset]);
 						}
@@ -2017,16 +2065,15 @@ static int cts_tcs_test_short(struct chipone_ts_data *chip_data,
 				(chip_data->p_cts_test_para->test_short_min != 0)) {
 				for (r = 0; r < cts_dev->fwdata.rows; r++) {
 					for (c = 0; c < cts_dev->fwdata.cols; c++) {
-						offset = r * cts_dev->fwdata.cols + c;
-		
-						if ((test_result[offset] < chip_data->p_cts_test_para->test_short_min) &&
-							(test_result[offset] > chip_data->p_cts_test_para->test_short_max)) {
+						offset = r * cts_dev->hwdata->num_col + c;
+
+						if (test_result[offset] < chip_data->p_cts_test_para->test_short_min) {
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s failed nodes:\n", "Shortdata");
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, test_result[offset]);
 						}
@@ -2067,18 +2114,20 @@ static int cts_tcs_test_short(struct chipone_ts_data *chip_data,
 		TPD_INFO("<I> item limit type: %d\n", item_limit_type);
 		if (item_limit_type) {
 			if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_CERTAIN) {
+				TPD_INFO("<I> [%s] max: %d, min: %d", "Shortdata between rows",
+					*chip_data->p_cts_autotest_offset->cts_short_max,
+					*chip_data->p_cts_autotest_offset->cts_short_min);
 				for (r = 0; r < cts_dev->fwdata.rows; r++) {
 					for (c = 0; c < cts_dev->fwdata.cols; c++) {
-						offset = r * cts_dev->fwdata.cols + c;
-		
-						if ((test_result[offset] < *chip_data->p_cts_autotest_offset->cts_short_min) &&
-							(test_result[offset] > *chip_data->p_cts_autotest_offset->cts_short_max)) {
+						offset = r * cts_dev->hwdata->num_col + c;
+
+						if (test_result[offset] < *chip_data->p_cts_autotest_offset->cts_short_min) {
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s failed nodes:\n", "Shortdata");
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, test_result[offset]);
 						}
@@ -2087,16 +2136,15 @@ static int cts_tcs_test_short(struct chipone_ts_data *chip_data,
 			} else if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_NODE) {
 				for (r = 0; r < cts_dev->fwdata.rows; r++) {
 					for (c = 0; c < cts_dev->fwdata.cols; c++) {
-						offset = r * cts_dev->fwdata.cols + c;
-				
-						if ((test_result[offset] < chip_data->p_cts_autotest_offset->cts_short_min[offset])
-							&& (test_result[offset] > chip_data->p_cts_autotest_offset->cts_short_max[offset])) {
+						offset = r * cts_dev->hwdata->num_col + c;
+
+						if (test_result[offset] < chip_data->p_cts_autotest_offset->cts_short_min[offset]) {
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s failed nodes:\n", "Shortdata");
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, test_result[offset]);
 						}
@@ -2110,16 +2158,15 @@ static int cts_tcs_test_short(struct chipone_ts_data *chip_data,
 				(chip_data->p_cts_test_para->test_short_min != 0)) {
 				for (r = 0; r < cts_dev->fwdata.rows; r++) {
 					for (c = 0; c < cts_dev->fwdata.cols; c++) {
-						offset = r * cts_dev->fwdata.cols + c;
-		
-						if ((test_result[offset] < chip_data->p_cts_test_para->test_short_min) &&
-							(test_result[offset] > chip_data->p_cts_test_para->test_short_max)) {
+						offset = r * cts_dev->hwdata->num_col + c;
+
+						if (test_result[offset] < chip_data->p_cts_test_para->test_short_min) {
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s failed nodes:\n", "Shortdata");
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, test_result[offset]);
 						}
@@ -2205,6 +2252,23 @@ static int cts_tcs_test_open(struct chipone_ts_data *chip_data,
 	snprintf(data_buf, 64, "%s\n", "[CTS OPENDATA]");
 	tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
 
+	if (item_limit_type) {
+		if ((chip_data->p_cts_autotest_offset->cts_open_max == NULL)
+			|| (chip_data->p_cts_autotest_offset->cts_open_min == NULL)) {
+			TPD_INFO("<E> max or min NULL\n");
+			return -EINVAL;
+		}
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", *chip_data->p_cts_autotest_offset->cts_open_max,
+			*chip_data->p_cts_autotest_offset->cts_open_min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	} else {
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", chip_data->p_cts_test_para->test_open_max,
+			chip_data->p_cts_test_para->test_open_min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	}
+
 	cts_lock_device(cts_dev);
 	ret = cts_prepare_test(cts_dev);
 	if (ret) {
@@ -2271,16 +2335,15 @@ static int cts_tcs_test_open(struct chipone_ts_data *chip_data,
 				*chip_data->p_cts_autotest_offset->cts_open_min);
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
+					offset = r * cts_dev->hwdata->num_col + c;
 
-					if ((test_result[offset] < *chip_data->p_cts_autotest_offset->cts_open_min) &&
-						(test_result[offset] > *chip_data->p_cts_autotest_offset->cts_open_max)) {
+					if (test_result[offset] < *chip_data->p_cts_autotest_offset->cts_open_min) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Opendata");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, test_result[offset]);
 					}
@@ -2289,16 +2352,15 @@ static int cts_tcs_test_open(struct chipone_ts_data *chip_data,
 		} else if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_NODE) {
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
-			
-					if ((test_result[offset] < chip_data->p_cts_autotest_offset->cts_open_min[offset])
-						&& (test_result[offset] > chip_data->p_cts_autotest_offset->cts_open_max[offset])) {
+					offset = r * cts_dev->hwdata->num_col + c;
+
+					if (test_result[offset] < chip_data->p_cts_autotest_offset->cts_open_min[offset]) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Opendata");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, test_result[offset]);
 					}
@@ -2312,16 +2374,15 @@ static int cts_tcs_test_open(struct chipone_ts_data *chip_data,
 			(chip_data->p_cts_test_para->test_open_min != 0)) {
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
+					offset = r * cts_dev->hwdata->num_col + c;
 
-					if ((test_result[offset] < chip_data->p_cts_test_para->test_open_min) &&
-						(test_result[offset] > chip_data->p_cts_test_para->test_open_max)) {
+					if (test_result[offset] < chip_data->p_cts_test_para->test_open_min) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Opendata");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, test_result[offset]);
 					}
@@ -2408,13 +2469,30 @@ static int cts_tcs_test_rawdata(struct chipone_ts_data *chip_data,
 	snprintf(data_buf, 64, "%s\n", "[CTS RAWDATA]");
 	tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
 
+	if (item_limit_type) {
+		if ((chip_data->p_cts_autotest_offset->cts_rawdata_max == NULL)
+			|| (chip_data->p_cts_autotest_offset->cts_rawdata_min == NULL)) {
+			TPD_INFO("<E> max or min NULL\n");
+			return -EINVAL;
+		}
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", *chip_data->p_cts_autotest_offset->cts_rawdata_max,
+			*chip_data->p_cts_autotest_offset->cts_rawdata_min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	} else {
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", chip_data->p_cts_test_para->test_rawdata_max,
+			chip_data->p_cts_test_para->test_rawdata_min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	}
+
 	cts_lock_device(cts_dev);
 	ret = cts_prepare_test(cts_dev);
 	if (ret) {
 		TPD_INFO("<I> Prepare test failed %d", ret);
 		goto err_unlock;
 	}
-	
+
 	cts_set_int_data_types(cts_dev, INT_DATA_TYPE_RAWDATA);
 	cts_set_int_data_method(cts_dev, INT_DATA_METHOD_POLLING);
 
@@ -2440,7 +2518,7 @@ static int cts_tcs_test_rawdata(struct chipone_ts_data *chip_data,
 		snprintf(data_buf, 64, "[No: %d]\n", frame+1);
 		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
 		cts_output_data(cts_dev, cts_testdata, rawdata, "rawdata");
-		
+
 		TPD_INFO("<I> item limit type: %d\n", item_limit_type);
 		if (item_limit_type) {
 			if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_CERTAIN) {
@@ -2449,16 +2527,16 @@ static int cts_tcs_test_rawdata(struct chipone_ts_data *chip_data,
 					*chip_data->p_cts_autotest_offset->cts_rawdata_min);
 				for (r = 0; r < cts_dev->fwdata.rows; r++) {
 					for (c = 0; c < cts_dev->fwdata.cols; c++) {
-						offset = r * cts_dev->fwdata.cols + c;
+						offset = r * cts_dev->hwdata->num_col + c;
 
-						if ((rawdata[offset] < *chip_data->p_cts_autotest_offset->cts_rawdata_min) &&
+						if ((rawdata[offset] < *chip_data->p_cts_autotest_offset->cts_rawdata_min) ||
 							(rawdata[offset] > *chip_data->p_cts_autotest_offset->cts_rawdata_max)) {
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s(frame %d) failed nodes:\n", "Rawdata", frame+1);
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, rawdata[offset]);
 						}
@@ -2467,16 +2545,16 @@ static int cts_tcs_test_rawdata(struct chipone_ts_data *chip_data,
 			} else if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_NODE) {
 				for (r = 0; r < cts_dev->fwdata.rows; r++) {
 					for (c = 0; c < cts_dev->fwdata.cols; c++) {
-						offset = r * cts_dev->fwdata.cols + c;
-				
+						offset = r * cts_dev->hwdata->num_col + c;
+
 						if ((rawdata[offset] < chip_data->p_cts_autotest_offset->cts_rawdata_min[offset])
-							&& (rawdata[offset] > chip_data->p_cts_autotest_offset->cts_rawdata_max[offset])) {
+							|| (rawdata[offset] > chip_data->p_cts_autotest_offset->cts_rawdata_max[offset])) {
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s(frame %d) failed nodes:\n", "Rawdata", frame+1);
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, rawdata[offset]);
 						}
@@ -2490,16 +2568,16 @@ static int cts_tcs_test_rawdata(struct chipone_ts_data *chip_data,
 				(chip_data->p_cts_test_para->test_rawdata_min != 0)) {
 				for (r = 0; r < cts_dev->fwdata.rows; r++) {
 					for (c = 0; c < cts_dev->fwdata.cols; c++) {
-						offset = r * cts_dev->fwdata.cols + c;
+						offset = r * cts_dev->hwdata->num_col + c;
 
-						if ((rawdata[offset] < chip_data->p_cts_test_para->test_rawdata_min) &&
+						if ((rawdata[offset] < chip_data->p_cts_test_para->test_rawdata_min) ||
 							(rawdata[offset] > chip_data->p_cts_test_para->test_rawdata_max)) {
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s(frame %d) failed nodes:\n", "Rawdata", frame+1);
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, rawdata[offset]);
 						}
@@ -2595,13 +2673,30 @@ static int cts_tcs_test_noise(struct chipone_ts_data *chip_data,
 	snprintf(data_buf, 64, "%s\n", "[CTS NOISEDATA]");
 	tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
 
+	if (item_limit_type) {
+		if ((chip_data->p_cts_autotest_offset->cts_noise_max == NULL)
+			|| (chip_data->p_cts_autotest_offset->cts_noise_min == NULL)) {
+			TPD_INFO("<E> max or min NULL\n");
+			return -EINVAL;
+		}
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", *chip_data->p_cts_autotest_offset->cts_noise_max,
+			*chip_data->p_cts_autotest_offset->cts_noise_min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	} else {
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", chip_data->p_cts_test_para->test_noise_max,
+			chip_data->p_cts_test_para->test_noise_min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	}
+
 	cts_lock_device(cts_dev);
 	ret = cts_prepare_test(cts_dev);
 	if (ret) {
 		TPD_INFO("<I> Prepare test failed %d", ret);
 		goto err_unlock;
 	}
-	
+
 	cts_set_int_data_types(cts_dev, INT_DATA_TYPE_RAWDATA);
 	cts_set_int_data_method(cts_dev, INT_DATA_METHOD_POLLING);
 
@@ -2667,16 +2762,16 @@ static int cts_tcs_test_noise(struct chipone_ts_data *chip_data,
 				*chip_data->p_cts_autotest_offset->cts_noise_min);
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
-	
-					if ((noise[offset] < *chip_data->p_cts_autotest_offset->cts_noise_min) &&
+					offset = r * cts_dev->hwdata->num_col + c;
+
+					if ((noise[offset] < *chip_data->p_cts_autotest_offset->cts_noise_min) ||
 						(noise[offset] > *chip_data->p_cts_autotest_offset->cts_noise_max)) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Noisedata");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, noise[offset]);
 					}
@@ -2685,16 +2780,16 @@ static int cts_tcs_test_noise(struct chipone_ts_data *chip_data,
 		} else if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_NODE) {
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
-			
+					offset = r * cts_dev->hwdata->num_col + c;
+
 					if ((noise[offset] < chip_data->p_cts_autotest_offset->cts_noise_min[offset])
-						&& (noise[offset] > chip_data->p_cts_autotest_offset->cts_noise_max[offset])) {
+						|| (noise[offset] > chip_data->p_cts_autotest_offset->cts_noise_max[offset])) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Noisedata");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, noise[offset]);
 					}
@@ -2708,16 +2803,16 @@ static int cts_tcs_test_noise(struct chipone_ts_data *chip_data,
 			(chip_data->p_cts_test_para->test_noise_min != 0)) {
 			for (r = 0; r < cts_dev->fwdata.rows; r++) {
 				for (c = 0; c < cts_dev->fwdata.cols; c++) {
-					offset = r * cts_dev->fwdata.cols + c;
-	
-					if ((noise[offset] < chip_data->p_cts_test_para->test_noise_min) &&
+					offset = r * cts_dev->hwdata->num_col + c;
+
+					if ((noise[offset] < chip_data->p_cts_test_para->test_noise_min) ||
 						(noise[offset] > chip_data->p_cts_test_para->test_noise_max)) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", "Noisedata");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, noise[offset]);
 					}
@@ -2727,7 +2822,7 @@ static int cts_tcs_test_noise(struct chipone_ts_data *chip_data,
 			TPD_INFO("<E> limit para invalid, item limit type: %d\n", item_limit_type);
 		}
 	}
-	
+
 	cts_set_int_data_method(cts_dev, INT_DATA_METHOD_NONE);
 	cts_set_int_data_types(cts_dev, INT_DATA_TYPE_NONE);
 
@@ -2810,6 +2905,8 @@ static int cts_tcs_test_gesture_rawdata(struct chipone_ts_data *chip_data,
 	uint8_t data_buf[64];
     u16 *gstr_rawdata = NULL;
 	uint16_t item_limit_type = 0xFFFF;
+	int32_t *max = NULL;
+	int32_t *min = NULL;
 
 	TPD_INFO("<I> %s +\n", __func__);
 
@@ -2828,11 +2925,15 @@ static int cts_tcs_test_gesture_rawdata(struct chipone_ts_data *chip_data,
 		cols = cts_dev->fwdata.cols;
 		test_frame = chip_data->p_cts_test_para->test_gstr_rawdata_frames;
 		item_limit_type = chip_data->p_cts_test_para->limit_type_gstr_rawdata;
+		max = chip_data->p_cts_autotest_offset->cts_gstr_rawdata_max;
+		min = chip_data->p_cts_autotest_offset->cts_gstr_rawdata_min;
 	} else {
 		rows = cts_dev->fwdata.rows;
 		cols = CTS_TEST_LP_DATA_CHANNEL;
 		test_frame = chip_data->p_cts_test_para->test_gstr_lp_rawdata_frames;
 		item_limit_type = chip_data->p_cts_test_para->limit_type_gstr_lp_rawdata;
+		max = chip_data->p_cts_autotest_offset->cts_gstr_lp_rawdata_max;
+		min = chip_data->p_cts_autotest_offset->cts_gstr_lp_rawdata_min;
 	}
 
     gstr_rawdata = (u16 *)kmalloc(tsdata_frame_size, GFP_KERNEL);
@@ -2842,8 +2943,26 @@ static int cts_tcs_test_gesture_rawdata(struct chipone_ts_data *chip_data,
     }
 
 	memset(data_buf, 0, sizeof(data_buf));
-	snprintf(data_buf, 64, "%s\n", "[CTS GSTR RAWDATA]");
+	snprintf(data_buf, 64, "%s\n", idle_mode ? "[CTS GSTR RAWDATA]" : "[CTS GSTR LP RAWDATA]");
 	tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+
+	if (item_limit_type) {
+		if ((chip_data->p_cts_autotest_offset->cts_gstr_rawdata_max == NULL)
+			|| (chip_data->p_cts_autotest_offset->cts_gstr_rawdata_min == NULL)
+			|| (chip_data->p_cts_autotest_offset->cts_gstr_lp_rawdata_max == NULL)
+			|| (chip_data->p_cts_autotest_offset->cts_gstr_lp_rawdata_min == NULL)) {
+			TPD_INFO("<E> max or min NULL\n");
+			return -EINVAL;
+		}
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", *max, *min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	} else {
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", chip_data->p_cts_test_para->test_gstr_rawdata_max,
+			chip_data->p_cts_test_para->test_gstr_rawdata_min);
+	tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	}
 
     cts_lock_device(cts_dev);
     cts_set_int_data_types(cts_dev, INT_DATA_TYPE_RAWDATA);
@@ -2897,30 +3016,23 @@ static int cts_tcs_test_gesture_rawdata(struct chipone_ts_data *chip_data,
 		snprintf(data_buf, 64, "[No: %d]\n", frame+1);
 		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
 		cts_output_data(cts_dev, cts_testdata, gstr_rawdata, idle_mode ? "gstr rawdata" : "gstr lp rawdata");
-		
+
 		TPD_INFO("<I> item limit type: %d\n", item_limit_type);
 		if (item_limit_type) {
 			if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_CERTAIN) {
-				if (idle_mode)
-					TPD_INFO("<I> [%s] max: %d, min: %d", "Gstr rawdata",
-						*chip_data->p_cts_autotest_offset->cts_gstr_rawdata_max,
-						*chip_data->p_cts_autotest_offset->cts_gstr_rawdata_min);
-				else
-					TPD_INFO("<I> [%s] max: %d, min: %d", "Gstr lp rawdata",
-						*chip_data->p_cts_autotest_offset->cts_gstr_lp_rawdata_max,
-						*chip_data->p_cts_autotest_offset->cts_gstr_lp_rawdata_min);
+				TPD_INFO("<I> [%s] max: %d, min: %d",
+					idle_mode ? "Gstr rawdata" : "Gstr lp rawdata", *max, *min);
 				for (r = 0; r < rows; r++) {
 					for (c = 0; c < cols; c++) {
-						offset = r * cols + c;
-		
-						if ((gstr_rawdata[offset] < *chip_data->p_cts_autotest_offset->cts_gstr_rawdata_min) &&
-							(gstr_rawdata[offset] > *chip_data->p_cts_autotest_offset->cts_gstr_rawdata_max)) {
+						offset = r * cts_dev->hwdata->num_col + c;
+
+						if ((gstr_rawdata[offset] < *min) || (gstr_rawdata[offset] > *max)) {
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s(frame %d) failed nodes:\n", "Gstr Rawdata", frame+1);
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, gstr_rawdata[offset]);
 						}
@@ -2929,16 +3041,15 @@ static int cts_tcs_test_gesture_rawdata(struct chipone_ts_data *chip_data,
 			} else if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_NODE) {
 				for (r = 0; r < rows; r++) {
 					for (c = 0; c < cols; c++) {
-						offset = r * cols + c;
-				
-						if ((gstr_rawdata[offset] < chip_data->p_cts_autotest_offset->cts_gstr_rawdata_min[offset])
-							&& (gstr_rawdata[offset] > chip_data->p_cts_autotest_offset->cts_gstr_rawdata_max[offset])) {
+						offset = r * cts_dev->hwdata->num_col + c;
+
+						if ((gstr_rawdata[offset] < min[offset]) || (gstr_rawdata[offset] > max[offset])) {
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s(frame %d) failed nodes:\n", "Gstr Rawdata", frame+1);
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, gstr_rawdata[offset]);
 						}
@@ -2952,16 +3063,16 @@ static int cts_tcs_test_gesture_rawdata(struct chipone_ts_data *chip_data,
 				(chip_data->p_cts_test_para->test_gstr_rawdata_min != 0)) {
 				for (r = 0; r < rows; r++) {
 					for (c = 0; c < cols; c++) {
-						offset = r * cols + c;
-		
-						if ((gstr_rawdata[offset] < chip_data->p_cts_test_para->test_gstr_rawdata_min) &&
+						offset = r * cts_dev->hwdata->num_col + c;
+
+						if ((gstr_rawdata[offset] < chip_data->p_cts_test_para->test_gstr_rawdata_min) ||
 							(gstr_rawdata[offset] > chip_data->p_cts_test_para->test_gstr_rawdata_max)) {
 							if (failed_cnt == 0) {
 								TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 								TPD_INFO("<I> %s(frame %d) failed nodes:\n", "Gstr Rawdata", frame+1);
 							}
 							failed_cnt++;
-							
+
 							TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 								failed_cnt, r, c, gstr_rawdata[offset]);
 						}
@@ -3022,6 +3133,8 @@ static int cts_tcs_test_gesture_noise(struct chipone_ts_data *chip_data,
     u16 *gstr_noise = NULL;
     bool first_frame = true;
 	uint16_t item_limit_type = 0xFFFF;
+	int32_t *max = NULL;
+	int32_t *min = NULL;
 
 	TPD_INFO("<I> %s +\n", __func__);
 
@@ -3040,11 +3153,15 @@ static int cts_tcs_test_gesture_noise(struct chipone_ts_data *chip_data,
 		cols = cts_dev->fwdata.cols;
 		test_frame = chip_data->p_cts_test_para->test_gstr_noise_frames;
 		item_limit_type = chip_data->p_cts_test_para->limit_type_gstr_noise;
+		max = chip_data->p_cts_autotest_offset->cts_gstr_noise_max;
+		min = chip_data->p_cts_autotest_offset->cts_gstr_noise_min;
 	} else {
 		rows = cts_dev->fwdata.rows;
 		cols = CTS_TEST_LP_DATA_CHANNEL;
 		test_frame = chip_data->p_cts_test_para->test_gstr_lp_noise_frames;
 		item_limit_type = chip_data->p_cts_test_para->limit_type_gstr_lp_noise;
+		max = chip_data->p_cts_autotest_offset->cts_gstr_lp_noise_max;
+		min = chip_data->p_cts_autotest_offset->cts_gstr_lp_noise_min;
 	}
 
     buf_size = 4 * tsdata_frame_size;
@@ -3059,8 +3176,26 @@ static int cts_tcs_test_gesture_noise(struct chipone_ts_data *chip_data,
     gstr_noise		= curr_rawdata + 3 * num_nodes;
 
 	memset(data_buf, 0, sizeof(data_buf));
-	snprintf(data_buf, 64, "%s\n", "[CTS GSTR NOISEDATA]");
+	snprintf(data_buf, 64, "%s\n", idle_mode ? "[CTS GSTR NOISEDATA]" : "[CTS GSTR LP NOISEDATA]");
 	tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+
+	if (item_limit_type) {
+		if ((chip_data->p_cts_autotest_offset->cts_gstr_noise_max == NULL)
+			|| (chip_data->p_cts_autotest_offset->cts_gstr_noise_min == NULL)
+			|| (chip_data->p_cts_autotest_offset->cts_gstr_lp_noise_max == NULL)
+			|| (chip_data->p_cts_autotest_offset->cts_gstr_lp_noise_min == NULL)) {
+			TPD_INFO("<E> max or min NULL\n");
+			return -EINVAL;
+		}
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", *max, *min);
+		tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	} else {
+		memset(data_buf, 0, sizeof(data_buf));
+		snprintf(data_buf, 64, "[MAX: %d][MIN: %d]\n", chip_data->p_cts_test_para->test_gstr_noise_max,
+			chip_data->p_cts_test_para->test_gstr_noise_min);
+	tp_test_write(cts_testdata->fp, cts_testdata->length, data_buf, strlen(data_buf), cts_testdata->pos);
+	}
 
     cts_lock_device(cts_dev);
     cts_set_int_data_types(cts_dev, INT_DATA_TYPE_RAWDATA);
@@ -3151,26 +3286,19 @@ static int cts_tcs_test_gesture_noise(struct chipone_ts_data *chip_data,
 	TPD_INFO("<I> item limit type: %d\n", item_limit_type);
 	if (item_limit_type) {
 		if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_CERTAIN) {
-			if (idle_mode)
-				TPD_INFO("<I> [%s] max: %d, min: %d", "Gstr noisedata",
-					*chip_data->p_cts_autotest_offset->cts_gstr_noise_max,
-					*chip_data->p_cts_autotest_offset->cts_gstr_noise_min);
-			else
-				TPD_INFO("<I> [%s] max: %d, min: %d", "Gstr lp noisedata",
-					*chip_data->p_cts_autotest_offset->cts_gstr_lp_noise_max,
-					*chip_data->p_cts_autotest_offset->cts_gstr_lp_noise_min);
+			TPD_INFO("<I> [%s] max: %d, min: %d",
+				idle_mode ? "Gstr noisedata" : "Gstr lp noisedata", *max, *min);
 			for (r = 0; r < rows; r++) {
 				for (c = 0; c < cols; c++) {
-					offset = r * cols + c;
+					offset = r * cts_dev->hwdata->num_col + c;
 
-					if ((gstr_noise[offset] < *chip_data->p_cts_autotest_offset->cts_gstr_noise_min) &&
-						(gstr_noise[offset] > *chip_data->p_cts_autotest_offset->cts_gstr_noise_max)) {
+					if ((gstr_noise[offset] < *min) || (gstr_noise[offset] > *max)) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", idle_mode ? "Gstr noise" : "Gstr lp noise");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, gstr_noise[offset]);
 					}
@@ -3179,16 +3307,15 @@ static int cts_tcs_test_gesture_noise(struct chipone_ts_data *chip_data,
 		} else if (item_limit_type == CTS_ITEM_LIMIT_TYPE_CSV_NODE) {
 			for (r = 0; r < rows; r++) {
 				for (c = 0; c < cols; c++) {
-					offset = r * cols + c;
-			
-					if ((gstr_noise[offset] < chip_data->p_cts_autotest_offset->cts_gstr_noise_min[offset])
-						&& (gstr_noise[offset] > chip_data->p_cts_autotest_offset->cts_gstr_noise_max[offset])) {
+					offset = r * cts_dev->hwdata->num_col + c;
+
+					if ((gstr_noise[offset] < min[offset]) || (gstr_noise[offset] > max[offset])) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", idle_mode ? "Gstr noise" : "Gstr lp noise");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, gstr_noise[offset]);
 					}
@@ -3202,16 +3329,16 @@ static int cts_tcs_test_gesture_noise(struct chipone_ts_data *chip_data,
 			(chip_data->p_cts_test_para->test_gstr_noise_min != 0)) {
 			for (r = 0; r < rows; r++) {
 				for (c = 0; c < cols; c++) {
-					offset = r *cols + c;
+					offset = r *cts_dev->hwdata->num_col + c;
 
-					if ((gstr_noise[offset] < chip_data->p_cts_test_para->test_gstr_noise_min) &&
+					if ((gstr_noise[offset] < chip_data->p_cts_test_para->test_gstr_noise_min) ||
 						(gstr_noise[offset] > chip_data->p_cts_test_para->test_gstr_noise_max)) {
 						if (failed_cnt == 0) {
 							TPD_INFO("<I> %s\n", SPLIT_LINE_STR);
 							TPD_INFO("<I> %s failed nodes:\n", idle_mode ? "Gstr noise" : "Gstr lp noise");
 						}
 						failed_cnt++;
-						
+
 						TPD_INFO("<I>	%3d: [%-2d][%-2d] = %u\n",
 							failed_cnt, r, c, gstr_noise[offset]);
 					}
@@ -3274,14 +3401,16 @@ static void cts_tcs_get_data_for_oplus(struct seq_file *s, void *chip_data, bool
         data_valid = false;
     }
 
-    if (data_valid) {
-        for (r = 0; r < cts_dev->fwdata.rows; r++) {
-            for (c = 0; c < cts_dev->fwdata.cols; c++) {
-                seq_printf(s, "%5d", rawdata[r * cts_dev->fwdata.cols + c]);
-            }
-           seq_printf(s, "\n");
-        }
-    }
+	if (data_valid) {
+		seq_printf(s, "diff_data:\n");
+		for (r = 0; r < cts_dev->fwdata.rows; r++) {
+			seq_printf(s, "[%2d]", r);
+			for (c = 0; c < cts_dev->fwdata.cols; c++) {
+				seq_printf(s, "%5d", rawdata[r * cts_dev->fwdata.cols + c]);
+			}
+			seq_printf(s, "\n");
+		}
+	}
 
     kfree(rawdata);
 }
@@ -3331,7 +3460,8 @@ struct cts_interface tcs_if = {
 	.set_sensitive_lv_set       = cts_tcs_set_sensitive_lv_set,
 	.set_diaphragm_lv_set       = cts_tcs_set_diaphragm_lv_set,
 	.get_water_flag             = cts_tcs_get_water_flag,
-
+	.set_waterproof_mode		= cts_tcs_set_waterproof_mode,
+	.set_aod_mode				= cts_tcs_set_aod_mode,
     .read_hw_reg                = cts_tcs_read_hw_reg,
     .write_hw_reg               = cts_tcs_write_hw_reg,
 

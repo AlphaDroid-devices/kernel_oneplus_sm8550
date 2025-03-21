@@ -2560,6 +2560,7 @@ bool oplus_vooc_get_fastchg_to_normal(void)
 		return g_vooc_chip->fastchg_to_normal;
 	}
 }
+EXPORT_SYMBOL(oplus_vooc_get_fastchg_to_normal);
 
 bool oplus_vooc_get_fastchg_to_warm_full(void)
 {
@@ -2569,6 +2570,7 @@ bool oplus_vooc_get_fastchg_to_warm_full(void)
 		return g_vooc_chip->fastchg_to_warm_full;
 	}
 }
+EXPORT_SYMBOL(oplus_vooc_get_fastchg_to_warm);
 
 void oplus_vooc_set_fastchg_to_normal_false(void)
 {
@@ -2690,6 +2692,7 @@ int oplus_vooc_get_adapter_update_status(void)
 		return g_vooc_chip->adapter_update_report;
 	}
 }
+EXPORT_SYMBOL(oplus_vooc_get_adapter_update_status);
 
 int oplus_vooc_get_adapter_update_real_status(void)
 {

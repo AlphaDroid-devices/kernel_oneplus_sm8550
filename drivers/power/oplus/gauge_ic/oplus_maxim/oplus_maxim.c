@@ -23,6 +23,7 @@
 #include <linux/device.h>
 #include <linux/types.h>
 #include <linux/version.h>
+#include <linux/pinctrl/consumer.h>
 #include <oplus_chg_module.h>
 #include <asm/setup.h>
 #include "oplus_ds28e30/1wire_protocol.h"

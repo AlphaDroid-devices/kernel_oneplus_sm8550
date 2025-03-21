@@ -204,6 +204,22 @@ int oplus_chg_strategy_get_data(struct oplus_chg_strategy *strategy, void *ret)
 	return strategy->desc->strategy_get_data(strategy, ret);
 }
 
+int oplus_chg_strategy_set_process_data(struct oplus_chg_strategy *strategy, const char *type, unsigned long arg)
+{
+	if (strategy == NULL) {
+		chg_err("strategy is NULL\n");
+		return -EINVAL;
+	}
+	if (type == NULL) {
+		chg_err("type is NULL\n");
+		return -EINVAL;
+	}
+	if (!strategy->desc || !strategy->desc->strategy_set_process_data)
+		return -ENOTSUPP;
+
+	return strategy->desc->strategy_set_process_data(strategy, type, arg);
+}
+
 int oplus_chg_strategy_get_metadata(struct oplus_chg_strategy *strategy, void *ret)
 {
 	if (strategy == NULL) {

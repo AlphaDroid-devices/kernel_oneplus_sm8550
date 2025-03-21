@@ -6451,6 +6451,7 @@ int oplus_voocphy_curr_event_handle(unsigned long data)
 	int temp_current = 0;
 	int temp_vbatt = 0;
 	int svooc_current_factor = 1;
+	int discharge_threshold = (oplus_chg_get_batt_num() == 1) ? -3000 : -2000;
 
 	if (!g_charger_chip) {
 		voocphy_info("g_charger_chip is null\n");
@@ -6581,11 +6582,11 @@ int oplus_voocphy_curr_event_handle(unsigned long data)
 	}
 
 	if (!chip->btb_temp_over) {//non btb temp over
-		if (vbat_temp_cur < -2000) { 	//BATT OUPUT 2000MA
+		if (vbat_temp_cur < discharge_threshold) {
 			curr_over_count++;
-			if (curr_over_count > 3) {
-				voocphy_info("vcurr low than -2000mA\n");
-				oplus_voocphy_set_status_and_notify_ap(g_voocphy_chip, FAST_NOTIFY_ABSENT);
+			if (curr_over_count > 6) {
+				voocphy_info("vcurr low than %dmA\n", discharge_threshold);
+				oplus_voocphy_set_status_and_notify_ap(g_voocphy_chip, FAST_NOTIFY_BAD_CONNECTED);
 			}
 		} else {
 			curr_over_count = 0;

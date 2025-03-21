@@ -66,7 +66,9 @@ struct oplus_dpdm_switch_ic {
 	enum oplus_dpdm_switch_mode mode;
 };
 
-#define AUDIO_SWITCH_RETRY_MAX	10
+#define AUDIO_SWITCH_RETRY_MAX			3
+#define OPLUS_AUDIO_SWITCH_READY_RETRY_MAX	50
+#define OPLUS_AUDIO_SWITCH_READY_DELAY_TIME_MS	5
 
 static int oplus_switch_to_ap(struct oplus_dpdm_switch_ic *chip)
 {
@@ -95,15 +97,15 @@ static int oplus_switch_to_ap(struct oplus_dpdm_switch_ic *chip)
 		do {
 			status = oplus_get_audio_switch_status();
 			if (TYPEC_AUDIO_SWITCH_STATE_STANDBY & status) {
-				chg_info("switch to standby , not switch to ap\n");
+				chg_info("switch to standby, not switch to ap\n");
 				break;
 			}
 			oplus_set_audio_switch_status(0);
 			status = oplus_get_audio_switch_status();
 			if ((status & TYPEC_AUDIO_SWITCH_STATE_MASK) | TYPEC_AUDIO_SWITCH_STATE_DPDM) {
-				chg_err("set switch to ap failed , retry=%d, status = 0x%x\n", retry, status);
+				chg_err("set switch to ap failed, retry=%d, status = 0x%x\n", retry, status);
 			} else {
-				chg_info("set switch to ap success , retry=%d\n", retry);
+				chg_info("set switch to ap success, retry=%d\n", retry);
 				break;
 			}
 		} while (--retry > 0);
@@ -144,10 +146,10 @@ static int oplus_switch_to_vooc(struct oplus_dpdm_switch_ic *chip)
 		do {
 			oplus_set_audio_switch_status(1);
 			status = oplus_get_audio_switch_status();
-			if (!(TYPEC_AUDIO_SWITCH_STATE_FAST_CHG & status) || status < 0) {
-				chg_err("set switch to vooc failed , retry=%d, status = 0x%x\n", retry, status);
+			if (!(TYPEC_AUDIO_SWITCH_STATE_FAST_CHG & status) || (status < 0)) {
+				chg_err("set switch to vooc failed, retry=%d, status = 0x%x\n", retry, status);
 			} else {
-				chg_info("set switch to vooc success , retry=%d\n", retry);
+				chg_info("set switch to vooc success, retry=%d\n", retry);
 				break;
 			}
 		} while (--retry > 0);
@@ -491,6 +493,22 @@ static int oplus_virtual_dpdm_switch_probe(struct platform_device *pdev)
 	struct device_node *node = pdev->dev.of_node;
 	struct oplus_chg_ic_cfg ic_cfg = { 0 };
 	int rc;
+	static int retry = 0;
+	int status = -EFAULT;
+	bool use_audio_switch = of_property_read_bool(node, "oplus,use_audio_switch");
+
+	/* fix the issue of audio switch is not ready */
+	if (use_audio_switch) {
+		status = oplus_check_audio_switch_ready();
+		if (status >= 0 || retry > OPLUS_AUDIO_SWITCH_READY_RETRY_MAX) {
+			chg_info("the audio switch is ready now, retry= %d!", retry);
+		} else {
+			chg_info("the audio switch is not ready now, retry = %d!", retry);
+			retry++;
+			msleep(OPLUS_AUDIO_SWITCH_READY_DELAY_TIME_MS);
+			return -EPROBE_DEFER;
+		}
+	}
 
 	chip = devm_kzalloc(&pdev->dev, sizeof(struct oplus_dpdm_switch_ic),
 			    GFP_KERNEL);

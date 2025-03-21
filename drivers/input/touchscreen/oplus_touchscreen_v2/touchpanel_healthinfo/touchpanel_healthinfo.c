@@ -864,14 +864,18 @@ int tp_touch_healthinfo_handle(struct monitor_data *monitor_data,
 								 monitor_data->report_rate))) { /*up and down in short time(2.5 frames) and short distance. judge as broken swipe*/
 						/*add_swipe_to_record(&monitor_data->broken_swipes,
 								    monitor_data->points_state[i].last_point, points[i]);*/
-						monitor_data->broken_swipes_count_array[points[i].y * (monitor_data->rx_num / 2) /
-								    monitor_data->max_y * (monitor_data->tx_num / 2) +
-								    points[i].x * (monitor_data->tx_num / 2) / monitor_data->max_x]++;
-						TPD_DETAIL("broken swipe:[%d %d] to [%d %d].\n",
-							   monitor_data->points_state[i].first_point.x,
-							   monitor_data->points_state[i].first_point.y,
-							   monitor_data->points_state[i].last_point.x,
-							   monitor_data->points_state[i].last_point.y);
+						if ((points[i].y >= 0 && points[i].y < monitor_data->max_y)
+								&& (points[i].x >= 0 && points[i].x < monitor_data->max_x)
+								&& (monitor_data->max_y != 0 && monitor_data->max_x != 0)) {
+								monitor_data->broken_swipes_count_array[points[i].y * (monitor_data->rx_num / 2) /
+									monitor_data->max_y * (monitor_data->tx_num / 2) +
+									points[i].x * (monitor_data->tx_num / 2) / monitor_data->max_x]++;
+								TPD_DETAIL("broken swipe:[%d %d] to [%d %d].\n",
+									monitor_data->points_state[i].first_point.x,
+									monitor_data->points_state[i].first_point.y,
+									monitor_data->points_state[i].last_point.x,
+									monitor_data->points_state[i].last_point.y);
+						}
 					}
 
 					if (monitor_data->points_state[i].touch_action == ACTION_CLICK
@@ -937,10 +941,14 @@ int tp_touch_healthinfo_handle(struct monitor_data *monitor_data,
 				if (monitor_data->points_state[i].jumping_times > JUMPING_POINT_TIMES) {
 					if (!monitor_data->points_state[i].is_down_handled) {
 						/*add_point_to_record(&monitor_data->jumping_points, points[i]);*/
-						monitor_data->jumping_points_count_array[points[i].y *
-								 (monitor_data->rx_num / 2) / monitor_data->max_y *
-								 (monitor_data->tx_num / 2) + points[i].x *
-								 (monitor_data->tx_num / 2) / monitor_data->max_x]++;
+						if ((points[i].y >= 0 && points[i].y < monitor_data->max_y)
+								&& (points[i].x >= 0 && points[i].x < monitor_data->max_x)
+								&& (monitor_data->max_y != 0 && monitor_data->max_x != 0)) {
+								monitor_data->jumping_points_count_array[points[i].y *
+										(monitor_data->rx_num / 2) / monitor_data->max_y *
+										(monitor_data->tx_num / 2) + points[i].x *
+										(monitor_data->tx_num / 2) / monitor_data->max_x]++;
+						} /* Judge whether it is abnormal */
 						catch_delta_data(monitor_data,
 								 monitor_data->jumping_point_delta_data);/*catch delta data*/
 						monitor_data->points_state[i].is_down_handled = true;
@@ -958,18 +966,25 @@ int tp_touch_healthinfo_handle(struct monitor_data *monitor_data,
 							monitor_data->points_state[i].time_counter, STUCK_POINT_TIME)) {
 					if (direction == VERTICAL_SCREEN) {
 						/*add_point_to_record(&monitor_data->stuck_points, points[i]);*/
-						monitor_data->stuck_points_count_array[points[i].y * (monitor_data->rx_num / 2) /
-							   monitor_data->max_y * (monitor_data->tx_num / 2) + points[i].x *
-							   (monitor_data->tx_num / 2) / monitor_data->max_x]++;
-						TPD_DETAIL("stuck point:[%d %d]\n", points[i].x, points[i].y);
-
+						if ((points[i].y >= 0 && points[i].y < monitor_data->max_y)
+								&& (points[i].x >= 0 && points[i].x < monitor_data->max_x)
+								&& (monitor_data->max_y != 0 && monitor_data->max_x != 0)) {
+								monitor_data->stuck_points_count_array[points[i].y * (monitor_data->rx_num / 2) /
+									monitor_data->max_y * (monitor_data->tx_num / 2) + points[i].x *
+									(monitor_data->tx_num / 2) / monitor_data->max_x]++;
+								TPD_DETAIL("stuck point:[%d %d]\n", points[i].x, points[i].y);
+						}
 					} else {
 						/*add_point_to_record(&monitor_data->lanscape_stuck_points, points[i]);*/
-						monitor_data->lanscape_stuck_points_count_array[points[i].y *
-							   (monitor_data->rx_num / 2) / monitor_data->max_y *
-							   (monitor_data->tx_num / 2) + points[i].x *
-							   (monitor_data->tx_num / 2) / monitor_data->max_x]++;
-						TPD_DETAIL("lanscape stuck point:[%d %d]\n", points[i].x, points[i].y);
+						if ((points[i].y >= 0 && points[i].y < monitor_data->max_y)
+								&& (points[i].x >= 0 && points[i].x < monitor_data->max_x)
+								&& (monitor_data->max_y != 0 && monitor_data->max_x != 0)) {
+								monitor_data->lanscape_stuck_points_count_array[points[i].y *
+									(monitor_data->rx_num / 2) / monitor_data->max_y *
+									(monitor_data->tx_num / 2) + points[i].x *
+									(monitor_data->tx_num / 2) / monitor_data->max_x]++;
+								TPD_DETAIL("lanscape stuck point:[%d %d]\n", points[i].x, points[i].y);
+						}
 					}
 
 					catch_delta_data(monitor_data,
@@ -1831,6 +1846,35 @@ int tp_reclining_healthinfo_handle(struct monitor_data *monitor_data,
 	return 0;
 }
 
+static int tp_glove_healthinfo_handle(struct monitor_data *monitor_data, int status)
+{
+	u64 glove_en_time = 0;
+
+	if (!monitor_data) {
+		return 0;
+	}
+
+	switch (status) {
+	case GLOVE_ENTER:
+		monitor_data->glove_enter_count++;
+		reset_healthinfo_time_counter(&monitor_data->glove_en_timer);
+		update_value_count_list(&monitor_data->health_report_list,
+			HEALTH_REPORT_GLOVE_ENTER, TYPE_RECORD_STR);
+		break;
+
+	case GLOVE_EXIT:
+		glove_en_time = monitor_data->glove_en_timer ?
+			check_healthinfo_time_counter_timeout(monitor_data->glove_en_timer, 0) : 0;
+		monitor_data->total_glove_en_time += glove_en_time;
+		monitor_data->glove_en_timer = 0;
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
 int tp_healthinfo_report(void *tp_monitor_data, healthinfo_type type,
 			 void *value)
 {
@@ -1957,6 +2001,10 @@ int tp_healthinfo_report(void *tp_monitor_data, healthinfo_type type,
 		ret = tp_irq_type_healthinfo_handle(monitor_data, *value_u32);
 		break;
 
+	case HEALTH_GLOVE:
+		ret = tp_glove_healthinfo_handle(monitor_data, *value_int);
+		break;
+
 	default:
 		break;
 	}
@@ -1972,6 +2020,7 @@ int tp_healthinfo_read(struct seq_file *s, void *tp_monitor_data)
 	struct monitor_data *monitor_data = (struct monitor_data *)tp_monitor_data;
 	int *vc_value = NULL;
 	u64 screenon_time = 0;
+	u64 glove_en_time = 0;
 	struct grip_monitor_data  *grip = NULL;
 	struct irq_type_count  *irq_type = NULL;
 
@@ -2008,6 +2057,10 @@ int tp_healthinfo_read(struct seq_file *s, void *tp_monitor_data)
 		   (monitor_data->total_screenon_time + screenon_time) / MS_PER_SECOND);
 	seq_printf(s, "total_touch_time:%llds\n",
 		   monitor_data->total_touch_time / MS_PER_SECOND);
+
+	glove_en_time = monitor_data->glove_en_timer ? check_healthinfo_time_counter_timeout(monitor_data->glove_en_timer, 0) : 0;
+	seq_printf(s, "glove_enterDuration:%llds\n",
+			(monitor_data->total_glove_en_time + glove_en_time) / MS_PER_SECOND);
 
 	if (monitor_data->total_touch_time_in_game[0]) {
 		seq_printf(s,
@@ -2588,6 +2641,10 @@ int tp_healthinfo_clear(void *tp_monitor_data)
 	monitor_data->max_touch_num_in_game = 0;
 	monitor_data->click_count = 0;
 	monitor_data->swipe_count = 0;
+
+	reset_healthinfo_time_counter(&monitor_data->glove_en_timer);
+	monitor_data->glove_enter_count = 0;
+	monitor_data->total_glove_en_time = 0;
 
 	/*clear_delta_data(monitor_data->click_count_array, CLICK_COUNT_ARRAY_HEIGHT, CLICK_COUNT_ARRAY_WIDTH);*/
 

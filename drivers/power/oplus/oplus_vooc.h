@@ -465,6 +465,9 @@ struct oplus_vooc_operations {
 	int (*get_data_gpio_num)(struct oplus_vooc_chip *chip);
 	void (*update_temperature_soc)(void);
 	int (*check_asic_fw_status)(struct oplus_vooc_chip *chip);
+	int (*get_adapter_update_status)(void);
+	bool (*get_fastchg_to_normal)(void);
+	bool (*get_fastchg_to_warm)(void);
 };
 
 void oplus_vooc_init(struct oplus_vooc_chip *chip);

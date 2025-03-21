@@ -39,6 +39,7 @@ oplus_chg_v2-y += oplus_chg_gki.o
 oplus_chg_v2-y += oplus_chg_voter.o
 oplus_chg_v2-y += oplus_chg_wired.o
 oplus_chg_v2-y += oplus_chg_comm.o
+oplus_chg_v2-y += oplus_chg_plc.o
 oplus_chg_v2-y += oplus_chg_vooc.o
 oplus_chg_v2-y += oplus_configfs.o
 oplus_chg_v2-y += oplus_chg_dual_chan.o
@@ -94,6 +95,8 @@ oplus_chg_v2-y += monitor/oplus_chg_track.o
 oplus_chg_v2-y += monitor/oplus_chg_exception.o
 oplus_chg_v2-y += plat_ufcs/plat_ufcs_notify.o
 
+oplus_chg_v2-$(CONFIG_OPLUS_STATE_RETENTION) += oplus_chg_quirks.o
+oplus_chg_v2-$(CONFIG_OPLUS_STATE_RETENTION) += oplus_chg_state_retention.o
 oplus_chg_v2-$(CONFIG_OPLUS_DA9313_CHARGER) += charger_ic/oplus_da9313.o
 oplus_chg_v2-$(CONFIG_OPLUS_ADSP_CHARGER) += charger_ic/oplus_hal_adsp.o
 oplus_chg_v2-$(CONFIG_OPLUS_MP2762_CHARGER) += charger_ic/oplus_hal_mp2650.o

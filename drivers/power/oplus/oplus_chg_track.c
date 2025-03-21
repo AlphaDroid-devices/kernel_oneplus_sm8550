@@ -259,6 +259,11 @@ enum oplus_chg_track_hidl_type {
 	TRACK_HIDL_UISOH_INFO,
 	TRACK_HIDL_PARALLELCHG_FOLDMODE_INFO,
 	TRACK_HIDL_TTF_INFO,
+	TRACK_HIDL_BCC_SI_INFO,
+	TRACK_HIDL_BCC_SI_ERR,
+	TRACK_HIDL_EIS_INFO,
+	TRACK_HIDL_EIS_ERR,
+	TRACK_HIDL_ANTI_EXPANSION_INFO,
 };
 
 struct oplus_chg_track_app_ref {
@@ -475,6 +480,20 @@ struct oplus_chg_track_hidl_uisoh_info{
 	oplus_chg_track_trigger *uisoh_info_load_trigger;
 	struct delayed_work uisoh_info_load_trigger_work;
 	struct oplus_chg_track_hidl_uisoh_info_cmd uisoh_info;
+};
+
+struct oplus_chg_track_hidl_bae_info_cmd {
+	int anti_expansion_status;
+	int anti_expansion_rus_status;
+	int anti_expansion_high_risk_of_6hours;
+	int anti_expansion_risk_state_of_21days;
+};
+struct oplus_chg_track_hidl_bae_info{
+	struct mutex track_bae_info_lock;
+	bool bae_info_uploading;
+	oplus_chg_track_trigger *bae_info_load_trigger;
+	struct delayed_work bae_info_load_trigger_work;
+	struct oplus_chg_track_hidl_bae_info_cmd bae_info;
 };
 
 struct oplus_parallelchg_track_hidl_foldmode_info_cmd {
@@ -704,6 +723,7 @@ struct oplus_chg_track_status {
 	struct oplus_chg_track_hidl_bcc_info *bcc_info;
 	struct oplus_chg_track_hidl_bcc_err bcc_err;
 	struct oplus_chg_track_hidl_uisoh_info uisoh_info_s;
+	struct oplus_chg_track_hidl_bae_info bae_info_s;
 	struct oplus_parallelchg_track_hidl_foldmode_info parallelchg_info;
 	struct oplus_chg_track_hidl_ttf_info *ttf_info;
 	u8 bms_info[TRACK_HIDL_BMS_INFO_LEN];
@@ -715,6 +735,11 @@ struct oplus_chg_track_status {
 	int hyper_last_time;
 	int hyper_est_save_time;
 	int hyper_ave_speed;
+
+	int anti_expansion_status;
+	int anti_expansion_rus_status;
+	int anti_expansion_high_risk_of_6hours;
+	int anti_expansion_risk_state_of_21days;
 
 	struct oplus_chg_track_hidl_wls_third_err wls_third_err;
 	int wired_max_power;
@@ -860,6 +885,7 @@ static struct flag_reason_table track_flag_reason_table[] = {
 	{ TRACK_NOTIFY_FLAG_UISOH_INFO, "UiSohInfo" },
 	{ TRACK_NOTIFY_FLAG_GAUGE_INFO, "GaugeInfo"},
 	{ TRACK_NOTIFY_FLAG_GAUGE_MODE, "GaugeMode"},
+	{ TRACK_NOTIFY_FLAG_ANTI_EXPANSION_INFO, "AntiExpansionInfo" },
 
 	{ TRACK_NOTIFY_FLAG_NO_CHARGING, "NoCharging" },
 	{ TRACK_NOTIFY_FLAG_NO_CHARGING_OTG_ONLINE, "OtgOnline" },
@@ -1073,6 +1099,7 @@ static struct oplus_chg_track_chg_abnormal_reason chg_abnormal_reason_table[] = 
 	{ NOTIFY_BAT_NOT_CONNECT, "batt_no_conn", 0 },
 	{ NOTIFY_BAT_FULL_THIRD_BATTERY, "batt_no_auth", 0 },
 	{ NOTIFY_ALLOW_READING_ERR, "allow_reading_err", 0 },
+	{ NOTIFY_FASTCHG_CHECK_FAIL, "non_standard_charger", 0 },
 };
 
 static struct oplus_chg_track_i2c_err_reason i2c_err_reason_table[] = {
@@ -1761,6 +1788,41 @@ static int oplus_chg_track_set_hidl_uisoh_info(
 	return 0;
 }
 
+static int oplus_chg_track_set_anti_expansion(
+	struct oplus_chg_track_hidl_cmd *cmd, struct oplus_chg_track *track_chip)
+{
+	struct oplus_chg_track_hidl_bae_info_cmd *bae_info_cmd;
+	struct oplus_chg_track_hidl_bae_info *hidl_bae_i;
+
+	if (!cmd)
+		return -EINVAL;
+
+	if (cmd->data_size != sizeof(struct oplus_chg_track_hidl_bae_info_cmd)) {
+		pr_err("!!!size not match struct, ignore: [%u != %lu]\n", cmd->data_size,
+			sizeof(struct oplus_chg_track_hidl_bae_info_cmd));
+		return -EINVAL;
+	}
+
+	hidl_bae_i = &(track_chip->track_status.bae_info_s);
+	mutex_lock(&hidl_bae_i->track_bae_info_lock);
+	if (hidl_bae_i->bae_info_uploading) {
+		chg_debug("bae_info_uploading, should return\n");
+		mutex_unlock(&hidl_bae_i->track_bae_info_lock);
+		return 0;
+	}
+	bae_info_cmd = (struct oplus_chg_track_hidl_bae_info_cmd *)(cmd->data_buf);
+	memcpy(&hidl_bae_i->bae_info, bae_info_cmd, sizeof(*bae_info_cmd));
+	mutex_unlock(&hidl_bae_i->track_bae_info_lock);
+
+	schedule_delayed_work(&hidl_bae_i->bae_info_load_trigger_work, 0);
+
+	chg_info("bae_info_cmd : %d,%d,%d,%d\n", bae_info_cmd->anti_expansion_status,
+		bae_info_cmd->anti_expansion_rus_status,
+		bae_info_cmd->anti_expansion_high_risk_of_6hours,
+		bae_info_cmd->anti_expansion_risk_state_of_21days);
+	return 0;
+}
+
 static int oplus_parallelchg_track_foldmode_info(
 	struct oplus_chg_track_hidl_cmd *cmd, struct oplus_chg_track *track_chip)
 {
@@ -2054,6 +2116,76 @@ static void oplus_track_upload_parallelchg_foldmode_info(struct work_struct *wor
 	return;
 }
 
+static void oplus_track_upload_anti_expansion_info(struct work_struct *work)
+{
+	int index = 0;
+	int curr_time;
+	static int upload_count = 0;
+	static int pre_upload_time = 0;
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct oplus_chg_track_hidl_bae_info *bae_info_p = container_of(
+		dwork, struct oplus_chg_track_hidl_bae_info, bae_info_load_trigger_work);
+	struct oplus_chg_track *track_chip = g_track_chip;
+
+	if (!track_chip)
+		return;
+
+	if (!bae_info_p)
+		return;
+
+	curr_time = oplus_chg_track_get_local_time_s();
+	if (curr_time - pre_upload_time > TRACK_SOFT_ABNORMAL_UPLOAD_PERIOD)
+		upload_count = 0;
+
+	if (upload_count > TRACK_SOFT_SOH_UPLOAD_COUNT_MAX)
+		return;
+
+	mutex_lock(&bae_info_p->track_bae_info_lock);
+	if (bae_info_p->bae_info_uploading) {
+		chg_debug("bae_info_uploading, should return\n");
+		mutex_unlock(&bae_info_p->track_bae_info_lock);
+		return;
+	}
+
+	if (bae_info_p->bae_info_load_trigger)
+		kfree(bae_info_p->bae_info_load_trigger);
+	bae_info_p->bae_info_load_trigger = kzalloc(sizeof(oplus_chg_track_trigger), GFP_KERNEL);
+	if (!bae_info_p->bae_info_load_trigger) {
+		chg_err("bae_info_load_trigger memery alloc fail\n");
+		mutex_unlock(&bae_info_p->track_bae_info_lock);
+		return;
+	}
+	bae_info_p->bae_info_load_trigger->type_reason =
+		TRACK_NOTIFY_TYPE_GENERAL_RECORD;
+	bae_info_p->bae_info_load_trigger->flag_reason =
+		TRACK_NOTIFY_FLAG_ANTI_EXPANSION_INFO;
+	bae_info_p->bae_info_uploading = true;
+	upload_count++;
+	pre_upload_time = oplus_chg_track_get_local_time_s();
+	mutex_unlock(&bae_info_p->track_bae_info_lock);
+
+	index += snprintf(
+		&(bae_info_p->bae_info_load_trigger->crux_info[index]),
+		OPLUS_CHG_TRACK_CURX_INFO_LEN - index, "$$err_scene@@%s",
+		"anti_expansion_info");
+
+	index += snprintf(&(bae_info_p->bae_info_load_trigger->crux_info[index]),
+			OPLUS_CHG_TRACK_CURX_INFO_LEN - index,
+			"$$curx_info@@%d,%d,%d,%d", bae_info_p->bae_info.anti_expansion_status,
+			bae_info_p->bae_info.anti_expansion_rus_status,
+			bae_info_p->bae_info.anti_expansion_high_risk_of_6hours,
+			bae_info_p->bae_info.anti_expansion_risk_state_of_21days);
+
+	oplus_chg_track_upload_trigger_data(*(bae_info_p->bae_info_load_trigger));
+	if (bae_info_p->bae_info_load_trigger) {
+		kfree(bae_info_p->bae_info_load_trigger);
+		bae_info_p->bae_info_load_trigger = NULL;
+	}
+	memset(&bae_info_p->bae_info, 0, sizeof(bae_info_p->bae_info));
+	bae_info_p->bae_info_uploading = false;
+	chg_info("success\n");
+}
+
 static int oplus_chg_track_bcc_err_init(struct oplus_chg_track *chip)
 {
 	struct oplus_chg_track_hidl_bcc_err *bcc_err;
@@ -2087,6 +2219,25 @@ static int oplus_chg_track_uisoh_err_init(struct oplus_chg_track *chip)
 	memset(&uisoh_info_p->uisoh_info, 0, sizeof(uisoh_info_p->uisoh_info));
 	INIT_DELAYED_WORK(&uisoh_info_p->uisoh_info_load_trigger_work,
 		oplus_track_upload_uisoh_info);
+
+	return 0;
+}
+
+static int oplus_chg_track_anti_expansion_err_init(struct oplus_chg_track *chip)
+{
+	struct oplus_chg_track_hidl_bae_info *bae_info_i;
+
+	if (!chip)
+		return - EINVAL;
+
+	bae_info_i = &(chip->track_status.bae_info_s);
+	mutex_init(&bae_info_i->track_bae_info_lock);
+	bae_info_i->bae_info_uploading = false;
+	bae_info_i->bae_info_load_trigger = NULL;
+
+	memset(&bae_info_i->bae_info, 0, sizeof(bae_info_i->bae_info));
+	INIT_DELAYED_WORK(&bae_info_i->bae_info_load_trigger_work,
+		oplus_track_upload_anti_expansion_info);
 
 	return 0;
 }
@@ -2333,6 +2484,9 @@ int oplus_chg_track_set_hidl_info(const char *buf, size_t count)
 		break;
 	case TRACK_HIDL_TTF_INFO:
 		oplus_chg_track_set_hidl_ttf_info(p_cmd, track_chip);
+		break;
+	case TRACK_HIDL_ANTI_EXPANSION_INFO:
+		oplus_chg_track_set_anti_expansion(p_cmd, track_chip);
 		break;
 	default:
 		pr_err("!!!cmd error\n");
@@ -4654,6 +4808,9 @@ static int oplus_chg_track_check_chg_abnormal(struct oplus_chg_chip *chip, struc
 		track_status->allow_reading_err = 0;
 	}
 
+	if (notify_code & (1 << NOTIFY_FASTCHG_CHECK_FAIL))
+		oplus_chg_track_get_chg_abnormal_reason_info(NOTIFY_FASTCHG_CHECK_FAIL, track_status);
+
 	pr_debug("track_notify_code:0x%x, chager_notify_code:0x%x, "
 		"abnormal_reason[%s]\n",
 		notify_code, chip->notify_code, track_status->chg_abnormal_reason);
@@ -5635,7 +5792,7 @@ int oplus_chg_track_check_wired_charging_break(int vbus_rising)
 
 	return 0;
 }
-
+EXPORT_SYMBOL(oplus_chg_track_check_wired_charging_break);
 void oplus_chg_track_aging_ffc_trigger(bool ffc1_stage)
 {
 	struct oplus_chg_track *track_chip;
@@ -7566,6 +7723,7 @@ static int oplus_chg_track_driver_probe(struct platform_device *pdev)
 	oplus_parallelchg_track_foldmode_init(track_dev);
 	oplus_chg_track_ttf_info_init(track_dev);
 	oplus_chg_track_ntc_abnormal_info_init(track_dev);
+	oplus_chg_track_anti_expansion_err_init(track_dev);
 
 	rc = oplus_chg_adsp_track_thread_init(track_dev);
 	if (rc < 0) {

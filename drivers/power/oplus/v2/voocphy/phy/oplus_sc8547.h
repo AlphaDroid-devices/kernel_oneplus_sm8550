@@ -417,6 +417,8 @@
 #define SC8547_ADC_RATE_CONTINOUS           0
 #define SC8547_ADC_RATE_ONESHOT             1
 
+#define SC8547_ADC_FREEZE_MASK              0x20
+
 #define SC8547_ADC_DONE_STAT_MASK           0x04
 #define SC8547_ADC_DONE_STAT_SHIFT          2
 

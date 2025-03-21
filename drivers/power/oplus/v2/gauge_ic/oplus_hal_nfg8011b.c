@@ -791,6 +791,16 @@ error:
 	return -EINVAL;
 }
 
+void nfg8011b_effect_term_volt_init(struct chip_bq27541 *chip)
+{
+	int rc;
+	int deep_term_volt;
+
+	rc = nfg8011b_get_define_term_volt(chip, &deep_term_volt);
+	if (!rc)
+		nfg8011b_set_effect_term_volt(chip, deep_term_volt);
+}
+
 int nfg8011b_set_term_volt(struct chip_bq27541 *chip, int volt_mv)
 {
 	int ret;
@@ -1129,6 +1139,7 @@ int nfg8011b_get_sili_lifetime_info(struct chip_bq27541 *chip, u8 *info, int len
 		{ NFG8011B_SUBCMD_ALG_ADDR_1 , 12, 0, 11 },
 		{ NFG8011B_SUBCMD_LIFETIME_1_ADDR , 8, 0, 7 },
 		{ NFG8011B_SUBCMD_LIFETIME_2_ADDR , 24, 0, 23 },
+		{ NFG8011B_SUBCMD_ISC_INFO_ADDR , 32, 28, 31 },
 	};
 
 	extend = nfg8011b_extend;

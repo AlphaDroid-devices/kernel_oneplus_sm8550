@@ -227,7 +227,7 @@ ddrc_get_ratio_region(struct ddrc_strategy *ddrc)
 	}
 
 	for (i = 0; i < DDRC_RATIO_RANGE_MAX; i++) {
-		if (ratio <= ddrc->ratio_range_data[i]) {
+		if (ratio < ddrc->ratio_range_data[i]) {
 			ratio_region = i;
 			break;
 		}

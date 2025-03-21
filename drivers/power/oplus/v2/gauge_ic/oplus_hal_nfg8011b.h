@@ -23,6 +23,7 @@
 #define NFG8011B_SUBCMD_ALG_ADDR_0 0x00D0
 #define NFG8011B_SUBCMD_LIFETIME_1_ADDR 0x0060
 #define NFG8011B_SUBCMD_LIFETIME_2_ADDR 0x0062
+#define NFG8011B_SUBCMD_ISC_INFO_ADDR	0x0093
 #define NFG8011B_SUBCMD_IPM_ADDR	    0x007C
 #define NFG8011B_SUBCMD_ALG_ADDR_1 0x007D
 
@@ -88,6 +89,7 @@ int nfg8011b_get_last_cc(struct chip_bq27541 *chip, int *cc);
 int nfg8011b_set_last_cc(struct chip_bq27541 *chip, int cc);
 int nfg8011b_read_block(struct chip_bq27541 *chip, int addr, u8 *buf, int len, int offset, bool do_checksum);
 int nfg8011b_write_block(struct chip_bq27541 *chip, int addr, u8 *buf, int len, int offset, bool do_checksum);
+void nfg8011b_effect_term_volt_init(struct chip_bq27541 *chip);
 #else
 bool nfg8011b_sha256_hmac_authenticate(struct chip_bq27541 *chip)
 {
@@ -188,13 +190,19 @@ int nfg8011b_set_last_cc(struct chip_bq27541 *chip, int cc)
 {
 	return 0;
 }
+
 int nfg8011b_read_block(struct chip_bq27541 *chip, int addr, u8 *buf, int len, int offset, bool do_checksum)
 {
 	return 0;
 }
+
 int nfg8011b_write_block(struct chip_bq27541 *chip, int addr, u8 *buf, int len, int offset, bool do_checksum)
 {
 	return 0;
+}
+
+void nfg8011b_effect_term_volt_init(struct chip_bq27541 *chip)
+{
 }
 #endif
 

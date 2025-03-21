@@ -472,6 +472,7 @@ struct full_voltage_condition {
 
 #define VBATT_BASE_FOR_ADAPTER                  3404
 #define VBATT_DIV_FOR_ADAPTER                   10
+#define VBATT_MAX_FOR_ADAPTER                   4654
 
 #define VOOC_RX_RECEIVED_STATUS	0x03
 #define VOOC_RX_STARTED_STATUS  	0X01
@@ -911,6 +912,7 @@ struct oplus_voocphy_manager {
 	bool v2x_volt_full_open_low;
 	int eis_status;
 	int eis_copycat_detect_cnt;
+	bool cp_err_uploading;
 };
 
 struct oplus_voocphy_operations {
@@ -946,11 +948,13 @@ struct oplus_voocphy_operations {
 	int (*get_voocphy_enable)(struct oplus_voocphy_manager *chip, u8 *data);
 	void (*dump_voocphy_reg)(struct oplus_voocphy_manager *chip);
 	int (*get_chip_id)(struct oplus_voocphy_manager *chip);
-	int (*set_chg_pmid2out)(bool enable);
+	int (*set_chg_pmid2out)(bool enable, int reason);
 	bool (*get_chg_pmid2out)(void);
 	int (*reset_voocphy_ovp)(struct oplus_voocphy_manager *chip);
 	bool (*check_cp_int_happened)(struct oplus_voocphy_manager *chip, bool *dump_reg, bool *send_info);
 	void (*dual_chan_buck_set_ucp)(struct oplus_voocphy_manager *chip, int ucp_value);
+	int (*upload_cp_error)(struct oplus_voocphy_manager *chip, int err_type);
+	int (*get_cp_error_type)(struct oplus_voocphy_manager *chip, int *err_type);
 };
 
 #define VOOCPHY_LOG_BUF_LEN 1024

@@ -404,10 +404,16 @@ enum battery_property_id {
 	BATT_ZY0603_CHECK_RC_SFR,
 	BATT_ZY0603_SOFT_RESET,
 	BATT_AFI_UPDATE_DONE,
-#if defined CONFIG_OPLUS_SM8450_CHARGER
 	BATT_BAT_FULL_VOL_SET,
 	BATT_BAT_FULL_CURR_SET,
-#endif
+	BATT_DEEP_DISCHG_COUNT,
+	BATT_DEEP_TERM_VOLT,
+	BATT_SET_FIRST_USAGE_DATE,
+	BATT_SET_UI_CYCLE_COUNT,
+	BATT_SET_UI_SOH,
+	BATT_SET_USED_FLAG,
+	BATT_DEEP_DISCHG_LAST_CC,
+	BATT_GET_UFCS_RUNNING_STATE,
 #endif
 	BATT_PROP_MAX,
 };
@@ -884,6 +890,7 @@ struct battery_chg_dev {
 
 	enum oplus_dpdm_switch_mode dpdm_switch_mode;
 	int read_by_reg;
+	bool ufcs_run_check_support;
 #endif
 };
 

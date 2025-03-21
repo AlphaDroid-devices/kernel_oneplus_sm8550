@@ -1270,6 +1270,9 @@ static struct syna_hw_interface syna_spi_hw_if = {
 #ifdef CONFIG_TOUCHPANEL_MTK_PLATFORM
 const struct mtk_chip_config st_spi_ctrdata = {
 	.sample_sel = 0,
+	.cs_setuptime = 5000,
+	.cs_holdtime = 3000,
+	.cs_idletime = 0,
 	.tick_delay = 0,
 };
 #endif

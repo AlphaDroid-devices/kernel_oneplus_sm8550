@@ -131,6 +131,7 @@ enum oplus_chg_track_mos_device_error {
 #define OPLUS_CHG_TRACK_SCENE_GAGUE_DEFAULT	"default"
 #define OPLUS_CHG_TRACK_SCENE_GAGUE_SOC_1_PCT	"soc_smooth_to_1"
 #define OPLUS_CHG_TRACK_SCENE_GAUGE_BQFS_ERR "bqfs_err"
+#define OPLUS_CHG_TRACK_SCENE_GAUGE_CW_ERR "cw_err"
 enum oplus_chg_track_gague_device_error {
 	TRACK_GAGUE_ERR_DEFAULT,
 	TRACK_GAGUE_ERR_SEAL,
@@ -288,7 +289,8 @@ enum oplus_chg_track_info_flag {
 	TRACK_NOTIFY_FLAG_UISOH_INFO,
 	TRACK_NOTIFY_FLAG_GAUGE_INFO,
 	TRACK_NOTIFY_FLAG_GAUGE_MODE,
-	TRACK_NOTIFY_FLAG_GENERAL_RECORD_LAST = TRACK_NOTIFY_FLAG_GAUGE_MODE,
+	TRACK_NOTIFY_FLAG_ANTI_EXPANSION_INFO,
+	TRACK_NOTIFY_FLAG_GENERAL_RECORD_LAST = TRACK_NOTIFY_FLAG_ANTI_EXPANSION_INFO,
 
 	TRACK_NOTIFY_FLAG_NO_CHARGING_FIRST,
 	TRACK_NOTIFY_FLAG_NO_CHARGING = TRACK_NOTIFY_FLAG_NO_CHARGING_FIRST,
@@ -416,6 +418,8 @@ typedef struct {
 	u32 adsp_flag_reason;
 	u8 adsp_crux_info[ADSP_TRACK_CURX_INFO_LEN];
 } __attribute__((packed)) adsp_track_trigger;
+
+
 
 int oplus_chg_track_handle_adsp_info(u8 *crux_info, int len);
 int oplus_chg_track_upload_trigger_data(oplus_chg_track_trigger data);

@@ -8193,7 +8193,7 @@ int oplus_pdc_setup(int *vbus_mv, int *ibus_ma) {
 
 	ret = tcpm_set_pd_charging_policy(tcpc, DPM_CHARGING_POLICY_MAX_POWER_LVIC, NULL);
 	if (ret != TCPM_SUCCESS) {
-		printk(KERN_ERR "%s: tcpm_set_apdo_charging_policy fail\n", __func__);
+		chg_err("tcpm_set_apdo_charging_policy fail\n");
 		return -EINVAL;
 	}
 
@@ -9274,6 +9274,9 @@ static void mtk_charger_shutdown(struct platform_device *dev)
 	}
 
 #ifdef OPLUS_FEATURE_CHG_BASIC
+	if(oplus_is_pps_charging())
+		oplus_pps_shutdown();
+
 	if (g_oplus_chip) {
 		enter_ship_mode_function(g_oplus_chip);
 	}

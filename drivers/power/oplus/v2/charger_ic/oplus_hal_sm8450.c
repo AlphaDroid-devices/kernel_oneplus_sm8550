@@ -3737,6 +3737,7 @@ static int oplus_chg_parse_custom_dt(struct battery_chg_dev *bcdev)
 		bcdev->otg_real_soc_min = USB_OTG_REAL_SOC_MIN;
 	}
 
+	bcdev->ufcs_run_check_support = of_property_read_bool(node, "oplus,ufcs_run_check_support");
 	return 0;
 }
 #endif /*OPLUS_FEATURE_CHG_BASIC*/
@@ -4263,11 +4264,7 @@ static int fg_sm8350_get_battery_fcc(void)
 		return -1;
 	}
 
-	if (oplus_chg_get_voocphy_support(bcdev) == ADSP_VOOCPHY) {
-		fcc = bcdev->read_buffer_dump.data_buffer[6];
-		return fcc;
-	}
-
+	fcc = bcdev->read_buffer_dump.data_buffer[6];
 	return fcc;
 }
 
@@ -4280,11 +4277,7 @@ static int fg_sm8350_get_battery_cc(void)
 		return -1;
 	}
 
-	if (oplus_chg_get_voocphy_support(bcdev) == ADSP_VOOCPHY) {
-		cc = bcdev->read_buffer_dump.data_buffer[7];
-		return cc;
-	}
-
+	cc = bcdev->read_buffer_dump.data_buffer[7];
 	return cc;
 }
 
@@ -6756,6 +6749,23 @@ oplus_sm8350_get_battery_gauge_type_for_bcc(struct oplus_chg_ic_dev *ic_dev,
 	return 0;
 }
 
+static int
+oplus_sm8350_get_real_time_current(struct oplus_chg_ic_dev *ic_dev,
+				       int *val)
+{
+	struct battery_chg_dev *bcdev;
+
+	if ((ic_dev == NULL) || (val == NULL)) {
+		chg_err("!!!ic_dev null\n");
+		return -ENODEV;
+	}
+
+	bcdev = oplus_chg_ic_get_drvdata(ic_dev);
+	*val = bcdev->bcc_read_buffer_dump.data_buffer[8];
+
+	return 0;
+}
+
 static int oplus_chg_8350_get_afi_update_done(struct oplus_chg_ic_dev *ic_dev,
 					      bool *status)
 {
@@ -6870,6 +6880,11 @@ static void *oplus_chg_8350_gauge_get_func(struct oplus_chg_ic_dev *ic_dev,
 		func = OPLUS_CHG_IC_FUNC_CHECK(
 			OPLUS_IC_FUNC_GAUGE_GET_BATT_CURR,
 			oplus_sm8350_get_batt_curr);
+		break;
+	case OPLUS_IC_FUNC_GAUGE_GET_REAL_TIME_CURR:
+		func = OPLUS_CHG_IC_FUNC_CHECK(
+			OPLUS_IC_FUNC_GAUGE_GET_REAL_TIME_CURR,
+			oplus_sm8350_get_real_time_current);
 		break;
 	case OPLUS_IC_FUNC_GAUGE_GET_BATT_TEMP:
 		func = OPLUS_CHG_IC_FUNC_CHECK(
@@ -7414,12 +7429,44 @@ static int oplus_chg_adsp_ufcs_config_wd(struct oplus_chg_ic_dev *ic_dev, u16 ti
 	return rc;
 }
 
+static int oplus_chg_adsp_ufcs_running_state(struct oplus_chg_ic_dev *ic_dev, bool *state)
+{
+	int rc = 0;
+	struct battery_chg_dev *bcdev;
+	struct psy_state *pst = NULL;
+
+	if (ic_dev == NULL) {
+		chg_err("ic_dev is NULL");
+		return -ENODEV;
+	}
+
+	bcdev = oplus_chg_ic_get_drvdata(ic_dev);
+	if (!bcdev) {
+		chg_err("bcdev is NULL");
+		return -ENODEV;
+	}
+
+	pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	rc = read_property_id(bcdev, pst, BATT_GET_UFCS_RUNNING_STATE);
+	if (rc < 0) {
+		chg_err("rc is %d read failed!", rc);
+	} else {
+		*state = pst->prop[BATT_GET_UFCS_RUNNING_STATE];
+		rc = 0;
+	}
+
+	return rc;
+}
+
+#define OPLUS_UFCS_WAIT_EXIT_MAX_RETRY		30
 static int oplus_chg_adsp_ufcs_exit_ufcs_mode(struct oplus_chg_ic_dev *ic_dev)
 {
 	int rc = 0;
 	struct psy_state *pst = NULL;
 	struct battery_chg_dev *bcdev;
 	int exit = 1;
+	bool state = true;
+	int retry_count = 0; /* wait at most 600ms */
 
 	if (ic_dev == NULL) {
 		chg_err("oplus_chg_ic_dev is NULL");
@@ -7432,6 +7479,27 @@ static int oplus_chg_adsp_ufcs_exit_ufcs_mode(struct oplus_chg_ic_dev *ic_dev)
 	if (rc < 0) {
 		chg_err("set ufcs config fail, rc= %d\n", rc);
 		return -1;
+	}
+
+	if (bcdev->ufcs_run_check_support) {
+		/* wait until the ufcs is realy exited to avoid DP/DM access conflict! */
+		while (retry_count < OPLUS_UFCS_WAIT_EXIT_MAX_RETRY) {
+			rc = oplus_chg_adsp_ufcs_running_state(ic_dev, &state);
+			chg_info("retry_count = %d, state = %d, rc = %d", retry_count, state, rc);
+
+			if ((rc < 0) || (state == false)) {
+				chg_info("ufcs is exited now, not wait, retry_count %d\n", retry_count);
+				break;
+			}
+
+			/* when the usb is not connected, no need to wait! */
+			if (!bcdev->cid_status) {
+				chg_info("usb unpluged, not retry.\n");
+				break;
+			}
+			retry_count++;
+			msleep(20);
+		}
 	}
 
 	return rc;

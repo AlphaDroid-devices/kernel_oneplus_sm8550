@@ -53,6 +53,7 @@ struct puc_strategy {
 	int curr_level;
 	unsigned long timeout;
 	unsigned long over_time;
+	int temp_region;
 };
 
 #define PUC_DATA_SIZE	sizeof(struct puc_strategy_data)
@@ -288,8 +289,12 @@ puc_get_temp_region(struct puc_strategy *puc)
 			break;
 		}
 	}
-
-	return temp_region;
+	if((puc->temp_region != temp_region) && (puc->temp_region != PUC_BATT_CURVE_TEMP_RANGE_INVALID)) {
+		chg_err("puc->temp_region != temp_region use puc->temp_region\n");
+		return puc->temp_region;
+	} else {
+		return temp_region;
+	}
 }
 
 static struct oplus_chg_strategy *
@@ -649,6 +654,30 @@ static int puc_strategy_init(struct oplus_chg_strategy *strategy)
 
 	return 0;
 }
+static int puc_strategy_set_process_data(struct oplus_chg_strategy *strategy, const char *type, unsigned long arg)
+{
+	struct puc_strategy *puc;
+
+	if (strategy == NULL) {
+		chg_err("strategy is NULL\n");
+		return -EINVAL;
+	}
+	if(strcmp(type, "temp_region") != 0)
+		return -ENOTSUPP;
+	puc = (struct puc_strategy *)strategy;
+	chg_info("type = %s", type);
+	chg_info("arg = %lu", arg);
+	if((arg < PUC_BATT_CURVE_TEMP_RANGE_COOL) || (arg > PUC_BATT_CURVE_TEMP_RANGE_MAX)) {
+		chg_info("puc->temp_region out of range");
+		puc->temp_region = PUC_BATT_CURVE_TEMP_RANGE_INVALID;
+		return -EINVAL;
+	}
+
+	puc->temp_region = arg - 1;
+
+	chg_info("puc->temp_region = %d", puc->temp_region);
+	return 0;
+}
 
 static int puc_strategy_get_data(struct oplus_chg_strategy *strategy, void *ret)
 {
@@ -670,7 +699,10 @@ static int puc_strategy_get_data(struct oplus_chg_strategy *strategy, void *ret)
 		return -EINVAL;
 	}
 	puc = (struct puc_strategy *)strategy;
-
+	if (puc->curve == NULL) {
+		chg_err("curve is NULL\n");
+		return -EINVAL;
+	}
 	if (puc->curr_level >= puc->curve->num)
 		goto out;
 
@@ -765,6 +797,7 @@ static struct oplus_chg_strategy_desc puc_strategy_desc = {
 	.strategy_alloc_by_param_head = puc_strategy_alloc_by_param_head,
 #endif
 	.strategy_get_data = puc_strategy_get_data,
+	.strategy_set_process_data = puc_strategy_set_process_data,
 	.strategy_get_metadata = puc_strategy_get_metadata,
 };
 

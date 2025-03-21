@@ -103,6 +103,11 @@ static uint32_t publick_key[4] = { 0 };
 static uint32_t private_key1[4] = { 0 };
 static uint32_t private_key2[4] = { 0 };
 
+#define VBUS_9V	9000
+#define VBUS_5V	5000
+#define IBUS_2A	2000
+#define IBUS_3A	3000
+
 #endif /* OPLUS_FEATURE_CHG_BASIC */
 
 static struct mtk_charger *pinfo;
@@ -125,6 +130,47 @@ extern bool mt6375_int_chrdet_attach(void);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0))
 #define PDE_DATA(inode) pde_data(inode)
 #endif
+
+static int oplus_chg_suspend_charger(bool suspend, const char *client_str)
+{
+	struct votable *suspend_votable;
+	int rc;
+
+	suspend_votable = find_votable("WIRED_CHARGE_SUSPEND");
+	if (!suspend_votable) {
+		chg_err("WIRED_CHARGE_SUSPEND votable not found\n");
+		return -EINVAL;
+	}
+
+	rc = vote(suspend_votable, client_str, suspend, 1, false);
+	if (rc < 0)
+		chg_err("%s charger error, rc = %d\n",
+		        suspend ? "suspend" : "unsuspend", rc);
+	else
+		chg_info("%s charger\n", suspend ? "suspend" : "unsuspend");
+
+	return rc;
+}
+
+static int oplus_chg_set_icl_by_vote(int icl, const char *client_str)
+{
+	struct votable *icl_votable;
+	int rc;
+
+	icl_votable = find_votable("WIRED_ICL");
+	if (!icl_votable) {
+		chg_err("WIRED_ICL votable not found\n");
+		return -EINVAL;
+	}
+
+	rc = vote(icl_votable, client_str, true, icl, true);
+	if (rc < 0)
+		chg_err("set icl error: icl = %d, rc = %d\n", icl, rc);
+	else
+		chg_info("real icl = %d\n", icl);
+
+	return rc;
+}
 
 static bool is_gauge_topic_available(struct mtk_charger *chip)
 {
@@ -3473,7 +3519,11 @@ static int charger_routine_thread(void *arg)
 			get_uisoc(info),
 			dump_charger_type(info->chr_type, info->usb_type),
 			dump_charger_type(get_charger_type(info), get_usb_type(info)),
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+			info->ta_status[info->select_adapter_idx], get_ibat(info), chg_cv);
+#else
 			info->pd_type, get_ibat(info), chg_cv);
+#endif
 
 		is_charger_on = mtk_is_charger_on(info);
 
@@ -3757,6 +3807,14 @@ static int psy_charger_property_is_writeable(struct power_supply *psy,
 		return 0;
 	}
 }
+#define SUSPEND_RECOVERY_DELAY_MS 2000
+static void oplus_charger_suspend_recovery_work(struct work_struct *work)
+{
+	chg_info("voted suspend recovery, unsuspend\n");
+	oplus_chg_suspend_charger(false, PD_PDO_ICL_VOTER);
+	oplus_chg_suspend_charger(false, USB_IBUS_DRAW_VOTER);
+	oplus_chg_suspend_charger(false, TCPC_IBUS_DRAW_VOTER);
+}
 
 static enum power_supply_property charger_psy_properties[] = {
 	POWER_SUPPLY_PROP_ONLINE,
@@ -3766,6 +3824,7 @@ static enum power_supply_property charger_psy_properties[] = {
 	POWER_SUPPLY_PROP_TEMP,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT,
 };
 
 static int psy_charger_get_property(struct power_supply *psy,
@@ -3909,6 +3968,18 @@ int psy_charger_set_property(struct power_supply *psy,
 		info->chg_data[idx].thermal_input_current_limit =
 			val->intval;
 		break;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
+		if (oplus_chg_get_common_charge_icl_support_flags()) {
+			if (val->intval > 0) {
+				cancel_delayed_work_sync(&info->charger_suspend_recovery_work);
+				oplus_chg_suspend_charger(true, USB_IBUS_DRAW_VOTER);
+				schedule_delayed_work(&info->charger_suspend_recovery_work,
+				                      msecs_to_jiffies(SUSPEND_RECOVERY_DELAY_MS));
+			} else {
+				oplus_chg_suspend_charger(false, USB_IBUS_DRAW_VOTER);
+			}
+		}
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -3989,7 +4060,93 @@ static void hvdcp_detect_dn_check(struct mtk_charger *info)
 	_wake_up_charger(info);
 }
 #endif
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+int notify_adapter_event(struct notifier_block *notifier,
+			unsigned long evt, void *val)
+{
+	struct mtk_charger *pinfo = NULL;
+	u32 boot_mode = 0;
+	bool report_psy = true;
+	int index = 0;
+	struct info_notifier_block *ta_nb;
 
+	ta_nb = container_of(notifier, struct info_notifier_block, nb);
+	pinfo = ta_nb->info;
+	index = ta_nb - pinfo->ta_nb;
+	chr_err("%s %lu, %d\n", __func__, evt, index);
+	boot_mode = pinfo->bootmode;
+
+	switch (evt) {
+	case TA_DETACH:
+		mutex_lock(&pinfo->ta_lock);
+		chr_err("TA Notify Detach\n");
+		pinfo->ta_status[index] = TA_DETACH;
+		mutex_unlock(&pinfo->ta_lock);
+		mtk_chg_alg_notify_call(pinfo, EVT_DETACH, 0);
+		_wake_up_charger(pinfo);
+		/* reset PE40 */
+		break;
+
+	case TA_ATTACH:
+		mutex_lock(&pinfo->ta_lock);
+		chr_err("TA Notify Attach\n");
+		pinfo->ta_status[index] = TA_ATTACH;
+		mutex_unlock(&pinfo->ta_lock);
+		_wake_up_charger(pinfo);
+		/* reset PE40 */
+		break;
+
+	case TA_DETECT_FAIL:
+		mutex_lock(&pinfo->ta_lock);
+		chr_err("TA Notify Detect Fail\n");
+		pinfo->ta_status[index] = TA_DETECT_FAIL;
+		mutex_unlock(&pinfo->ta_lock);
+		_wake_up_charger(pinfo);
+		/* reset PE50 */
+		break;
+
+	case TA_HARD_RESET:
+		mutex_lock(&pinfo->ta_lock);
+		chr_err("TA Notify Hard Reset\n");
+		pinfo->ta_status[index] = TA_HARD_RESET;
+		mutex_unlock(&pinfo->ta_lock);
+		_wake_up_charger(pinfo);
+		/* PD is ready */
+		break;
+
+	case TA_SOFT_RESET:
+		mutex_lock(&pinfo->ta_lock);
+		chr_err("TA Notify Soft Reset\n");
+		pinfo->ta_status[index] = TA_SOFT_RESET;
+		mutex_unlock(&pinfo->ta_lock);
+		_wake_up_charger(pinfo);
+		/* PD30 is ready */
+		break;
+	case MTK_TYPEC_WD_STATUS:
+		chr_err("wd status = %d\n", *(bool *)val);
+		pinfo->water_detected = *(bool *)val;
+		if (pinfo->water_detected == true) {
+			pinfo->notify_code |= CHG_TYPEC_WD_STATUS;
+			pinfo->record_water_detected = true;
+			if (boot_mode == 8 || boot_mode == 9)
+				pinfo->enable_hv_charging = false;
+		} else {
+			pinfo->notify_code &= ~CHG_TYPEC_WD_STATUS;
+			if (boot_mode == 8 || boot_mode == 9)
+				pinfo->enable_hv_charging = true;
+		}
+		mtk_chgstat_notify(pinfo);
+		report_psy = boot_mode == 8 || boot_mode == 9;
+		break;
+	}
+	chr_debug("%s: evt: pd:%d, ufcs:%d\n", __func__,
+	pinfo->ta_status[PD], pinfo->ta_status[UFCS]);
+		/* adapter_control */
+	if (report_psy)
+		power_supply_changed(pinfo->psy1);
+	return NOTIFY_DONE;
+}
+#else
 int notify_adapter_event(struct notifier_block *notifier,
 			unsigned long evt, void *val)
 {
@@ -4075,6 +4232,7 @@ int notify_adapter_event(struct notifier_block *notifier,
 	}
 	return NOTIFY_DONE;
 }
+#endif
 
 int chg_alg_event(struct notifier_block *notifier,
 			unsigned long event, void *data)
@@ -4087,6 +4245,10 @@ int chg_alg_event(struct notifier_block *notifier,
 static void mtk_tcpc_set_otg_enable(struct oplus_chg_ic_dev *ic_dev, bool en)
 {
 	struct mtk_charger *chip;
+	if (!ic_dev) {
+		chr_err("ic_dev NULL\n");
+		return;
+	}
 	chip = oplus_chg_ic_get_drvdata(ic_dev);
 
 	if (chip->otg_enable == en)
@@ -4147,6 +4309,11 @@ int oplus_get_adapter_svid(void)
 				}
 			}
 			ret = tcpm_dpm_vdm_discover_svid(tcpc_dev, NULL);
+
+			/* When the return code is TCP_DPM_RET_NOT_SUPPORT, not retry to avoid PD hardreset. */
+			if (ret == TCP_DPM_RET_NOT_SUPPORT)
+				break;
+
 			if (ret != TCPM_SUCCESS) {
 				disc_svid_retries++;
 				chg_err("Failed to discover svid. ret %d retries: %d\n", ret, disc_svid_retries);
@@ -4180,12 +4347,54 @@ trigger_irq:
 	return 0;
 }
 
+static int oplus_get_max_current_from_fixed_pdo(struct mtk_charger *chip, int volt)
+{
+	int i = 0;
+	if (chip->pdo[0].pdo_data == 0) {
+		chg_err("get pdo info error\n");
+		return -EINVAL;
+	}
+
+	if (!oplus_chg_get_common_charge_icl_support_flags())
+		return -EINVAL;
+
+	for (i = 0; i < (PPS_PDO_MAX - 1); i++) {
+		if (chip->pdo[i].pdo_type != USBPD_PDMSG_PDOTYPE_FIXED_SUPPLY)
+			continue;
+
+		if (volt <= PD_PDO_VOL(chip->pdo[i].voltage_50mv)) {
+			chg_info("SourceCap[%d]: %08X, FixedSupply PDO V=%d mV, I=%d mA,"
+				"UsbCommCapable=%d, USBSuspendSupported:%d\n", i,
+				chip->pdo[i].pdo_data, PD_PDO_VOL(chip->pdo[i].voltage_50mv),
+				PD_PDO_CURR_MAX(chip->pdo[i].max_current_10ma),
+				chip->pdo[i].usb_comm_capable, chip->pdo[i].usb_suspend_supported);
+			return PD_PDO_CURR_MAX(chip->pdo[i].max_current_10ma);
+		}
+	}
+	return -EINVAL;
+}
+
+static void oplus_sourcecap_done_work(struct work_struct *work)
+{
+	struct mtk_charger *chip = container_of(work,
+		struct mtk_charger, sourcecap_done_work.work);
+	int max_pdo_current = 0;
+
+	/*set default input current from pdo*/
+	max_pdo_current = oplus_get_max_current_from_fixed_pdo(chip, VBUS_5V);
+	if (max_pdo_current >= 0)
+		oplus_chg_set_icl_by_vote(max_pdo_current, PD_PDO_ICL_VOTER);
+}
+
+#define DEFAULT_CURR_BY_CC 100
+#define SINK_SUSPEND_CURRENT 5
 static int pd_tcp_notifier_call(struct notifier_block *pnb,
 				unsigned long event, void *data)
 {
 	struct tcp_notify *noti = data;
 	struct mtk_charger *pinfo = NULL;
 	int ret = 0;
+	int i;
 
 	pinfo = container_of(pnb, struct mtk_charger, pd_nb);
 
@@ -4201,10 +4410,26 @@ static int pd_tcp_notifier_call(struct notifier_block *pnb,
 		}
 		break;
 
+	case TCP_NOTIFY_SINK_VBUS:
+		chg_info("pd type:%d. sink vbus %dmV %dmA type(0x%02X)\n",
+		         pinfo->pd_type, noti->vbus_state.mv, noti->vbus_state.ma, noti->vbus_state.type);
+		if (oplus_chg_get_common_charge_icl_support_flags() &&
+		    pinfo->pd_type == MTK_PD_CONNECT_PE_READY_SNK_APDO &&
+		    noti->vbus_state.type == TCP_VBUS_CTRL_PD_STANDBY &&
+		    noti->vbus_state.ma < SINK_SUSPEND_CURRENT) {
+			cancel_delayed_work_sync(&pinfo->charger_suspend_recovery_work);
+			oplus_chg_suspend_charger(true, TCPC_IBUS_DRAW_VOTER);
+			schedule_delayed_work(&pinfo->charger_suspend_recovery_work,
+			                      msecs_to_jiffies(SUSPEND_RECOVERY_DELAY_MS));
+		}
+		break;
+
 	case TCP_NOTIFY_PD_STATE:
 		switch (noti->pd_state.connected) {
 		case  PD_CONNECT_NONE:
 			pinfo->pd_type = MTK_PD_CONNECT_NONE;
+			oplus_chg_suspend_charger(false, PD_PDO_ICL_VOTER);
+			pinfo->pd_chg_volt = VBUS_5V;
 			chr_err("PD Notify Detach\n");
 			oplus_chg_ic_virq_trigger(pinfo->ic_dev, OPLUS_IC_VIRQ_CHG_TYPE_CHANGE);
 			break;
@@ -4287,6 +4512,9 @@ static int pd_tcp_notifier_call(struct notifier_block *pnb,
 		if (noti->chrdet_state.chrdet == 0) {
 			oplus_chg_ic_virq_trigger(pinfo->ic_dev, OPLUS_IC_VIRQ_SVID);
 
+			for (i = 0; i < pinfo->cap_nr; i++)
+				pinfo->pdo[i].pdo_data = 0;
+			oplus_chg_suspend_charger(false, PD_PDO_ICL_VOTER);
 			/*fix the one plus charger break bug: delay to set the pd_svooc state*/
 			schedule_delayed_work(&pinfo->detach_clean_work, msecs_to_jiffies(1500));
 		}
@@ -4296,6 +4524,18 @@ static int pd_tcp_notifier_call(struct notifier_block *pnb,
 	case TCP_NOTIFY_HVDCP_DETECT_DN:
 		chr_err("HVDCP_DETECT_DN = %d\n", (bool)noti->hvdcp_detect.hvdcp_detect_dn);
 		hvdcp_detect_dn_check(pinfo);
+		break;
+#endif
+#if IS_ENABLED(CONFIG_OPLUS_PD_SOURCECAP_UPDATE_SUPPORT)
+	case TCP_NOTIFY_PD_SOURCECAP_DONE:
+		chg_info("PD_SOURCECAP_DONE\n");
+		pinfo->cap_nr = (int)noti->caps_msg.caps->nr;
+		for (i = 0; i < pinfo->cap_nr; i++) {
+			pinfo->pdo[i].pdo_data = (u32)noti->caps_msg.caps->pdos[i];
+			chg_info("SourceCap[%d]: %08X\n", i + 1, pinfo->pdo[i].pdo_data);
+		}
+		if (oplus_chg_get_common_charge_icl_support_flags())
+			schedule_delayed_work(&pinfo->sourcecap_done_work, 0);
 		break;
 #endif
 	default:
@@ -4590,6 +4830,7 @@ static int oplus_mt6375_input_current_limit_write(struct mtk_charger *info, int 
 	struct charger_device *chg = info->chg1_dev;
 	int batt_volt;
 	union mms_msg_data data = {0};
+	int max_pdo_current;
 
 	for (i = ARRAY_SIZE(usb_icl) - 1; i >= 0; i--) {
 		if (usb_icl[i] <= value)
@@ -4622,6 +4863,27 @@ static int oplus_mt6375_input_current_limit_write(struct mtk_charger *info, int 
 	} else {
 		chg_info("gauge_topic is null, use default aicl_point 4500\n");
 		aicl_point = 4500;
+	}
+
+	if (oplus_chg_get_common_charge_icl_support_flags()) {
+		max_pdo_current = oplus_get_max_current_from_fixed_pdo(info, info->pd_chg_volt);
+		chg_info("max_pdo_current:%d ma\n", max_pdo_current);
+
+		if (max_pdo_current >= 0)
+			value = min(value, max_pdo_current);
+		if (value < DEFAULT_CURR_BY_CC) {
+			cancel_delayed_work_sync(&info->charger_suspend_recovery_work);
+			oplus_chg_suspend_charger(true, PD_PDO_ICL_VOTER);
+			schedule_delayed_work(&info->charger_suspend_recovery_work,
+			                      msecs_to_jiffies(SUSPEND_RECOVERY_DELAY_MS));
+
+			goto aicl_rerun;
+		} else if (value < usb_icl[0]) {
+			oplus_chg_suspend_charger(false, PD_PDO_ICL_VOTER);
+			goto common_charge_aicl_end;
+		} else {
+			oplus_chg_suspend_charger(false, PD_PDO_ICL_VOTER);
+		}
 	}
 
 	if (value < 500) {
@@ -4727,6 +4989,9 @@ aicl_end:
 	chg_info("usb input max current limit aicl chg_vol=%d i[%d]=%d sw_aicl_point:%d aicl_end\n", chg_vol, i, usb_icl[i], aicl_point);
 	rc = charger_dev_set_input_current(chg, usb_icl[i] * 1000);
 	goto aicl_rerun;
+common_charge_aicl_end:
+	rc = charger_dev_set_input_current(chg, DEFAULT_CURR_BY_CC * 1000);
+	chg_info("common_charge_aicl_end set icl:%d mA, rc=%d\n", DEFAULT_CURR_BY_CC, rc);
 aicl_rerun:
 	return rc;
 }
@@ -5501,11 +5766,7 @@ static int mtk_chg_set_qc_config(struct oplus_chg_ic_dev *ic_dev, enum oplus_chg
 	return 0;
 }
 
-#define VBUS_9V	9000
-#define VBUS_5V	5000
-#define IBUS_2A	2000
-#define IBUS_3A	3000
-
+#define PD_SWITCH_POLICY_DELAY_MS	100
 static int oplus_pdc_setup(int *vbus_mv, int *ibus_ma) {
 	int ret = 0;
 	int vbus_mv_t = 0;
@@ -5517,6 +5778,17 @@ static int oplus_pdc_setup(int *vbus_mv, int *ibus_ma) {
 		chg_err("get type_c_port0 fail\n");
 		return -EINVAL;
 	}
+
+	if (*vbus_mv == VBUS_5V)
+		ret = tcpm_set_pd_charging_policy(tcpc, DPM_CHARGING_POLICY_VSAFE5V, NULL);
+	else
+		ret = tcpm_set_pd_charging_policy(tcpc, DPM_CHARGING_POLICY_MAX_POWER_LVIC, NULL);
+
+	if (ret != TCPM_SUCCESS) {
+		chg_err("tcpm_set_apdo_charging_policy fail\n");
+		return -EINVAL;
+	}
+	msleep(PD_SWITCH_POLICY_DELAY_MS);
 
 	ret = tcpm_dpm_pd_request(tcpc, *vbus_mv, *ibus_ma, NULL);
 	if (ret != TCPM_SUCCESS) {
@@ -5663,6 +5935,7 @@ static int mtk_chg_set_pd_config(struct oplus_chg_ic_dev *ic_dev, u32 pdo)
 		curr_ma = PD_SRC_PDO_FIXED_MAX_CURR(pdo) * 10;
 		if (curr_ma >= 2000)
 			curr_ma = 2000;
+		chip->pd_chg_volt = vol_mv;
 		break;
 	case PD_SRC_PDO_TYPE_BATTERY:
 	case PD_SRC_PDO_TYPE_VARIABLE:
@@ -6530,6 +6803,20 @@ static int oplus_get_temp_volt(struct ntc_temp *ntc_param)
 		}
 		temp_chan = pinfo->usb_btb_temp_chan;
 		break;
+	case NTC_MASTER_CP_BTB:
+		if (!pinfo->master_cp_chan) {
+			chg_err("master_cp_chan NULL\n");
+			return -1;
+		}
+		temp_chan = pinfo->master_cp_chan;
+		break;
+	case NTC_SLAVE_CP_BTB:
+		if (!pinfo->slave_cp_chan) {
+			chg_err("slave_cp_chan NULL\n");
+			return -1;
+		}
+		temp_chan = pinfo->slave_cp_chan;
+		break;
 	default:
 		break;
 	}
@@ -6729,6 +7016,89 @@ int oplus_force_get_subboard_temp(void)
 }
 EXPORT_SYMBOL(oplus_force_get_subboard_temp);
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+static int oplus_get_master_cp_temp(void)
+{
+	int temp = 0;
+	int master_cp_temp = 0;
+	static bool is_param_init = false;
+	static struct ntc_temp ntc_param = {0};
+
+	if (!pinfo) {
+		chg_err("null pinfo\n");
+		return TEMP_25C;
+	}
+
+	if (!is_param_init) {
+		ntc_param.e_ntc_type = NTC_MASTER_CP_BTB;
+		ntc_param.i_tap_over_critical_low = 4397119;
+		ntc_param.i_rap_pull_up_r = 100000;
+		ntc_param.i_rap_pull_up_voltage = 1840;
+		ntc_param.i_tap_min = -400;
+		ntc_param.i_tap_max = 1250;
+		ntc_param.i_25c_volt = 2457;
+		ntc_param.pst_temp_table = sub_board_temp_table;
+		ntc_param.i_table_size = (sizeof(sub_board_temp_table) / sizeof(struct temp_param));
+		is_param_init = true;
+
+		chg_info("ntc_type:%d,critical_low:%d,pull_up_r=%d,pull_up_voltage=%d,tap_min=%d,tap_max=%d,table_size=%d\n", \
+			ntc_param.e_ntc_type, ntc_param.i_tap_over_critical_low, ntc_param.i_rap_pull_up_r, \
+			ntc_param.i_rap_pull_up_voltage, ntc_param.i_tap_min, ntc_param.i_tap_max, ntc_param.i_table_size);
+	}
+	ntc_param.ui_dwvolt = oplus_get_temp_volt(&ntc_param);
+	temp = oplus_res_to_temp(&ntc_param);
+
+	if (pinfo->support_ntc_01c_precision)
+		master_cp_temp = temp;
+	else
+		master_cp_temp = temp / 10;
+
+	chg_info("temp:%d, volt:%d\n", master_cp_temp, ntc_param.ui_dwvolt);
+
+	return master_cp_temp;
+}
+
+static int oplus_get_slave_cp_temp(void)
+{
+	int temp = 0;
+	int slave_cp_temp = 0;
+	static bool is_param_init = false;
+	static struct ntc_temp ntc_param = {0};
+
+	if (!pinfo) {
+		chg_err("null pinfo\n");
+		return TEMP_25C;
+	}
+
+	if (!is_param_init) {
+		ntc_param.e_ntc_type = NTC_SLAVE_CP_BTB;
+		ntc_param.i_tap_over_critical_low = 4397119;
+		ntc_param.i_rap_pull_up_r = 100000;
+		ntc_param.i_rap_pull_up_voltage = 1840;
+		ntc_param.i_tap_min = -400;
+		ntc_param.i_tap_max = 1250;
+		ntc_param.i_25c_volt = 2457;
+		ntc_param.pst_temp_table = sub_board_temp_table;
+		ntc_param.i_table_size = (sizeof(sub_board_temp_table) / sizeof(struct temp_param));
+		is_param_init = true;
+
+		chg_info("ntc_type:%d,critical_low:%d,pull_up_r=%d,pull_up_voltage=%d,tap_min=%d,tap_max=%d,table_size=%d\n", \
+			ntc_param.e_ntc_type, ntc_param.i_tap_over_critical_low, ntc_param.i_rap_pull_up_r, \
+			ntc_param.i_rap_pull_up_voltage, ntc_param.i_tap_min, ntc_param.i_tap_max, ntc_param.i_table_size);
+	}
+	ntc_param.ui_dwvolt = oplus_get_temp_volt(&ntc_param);
+	temp = oplus_res_to_temp(&ntc_param);
+
+	if (pinfo->support_ntc_01c_precision)
+		slave_cp_temp = temp;
+	else
+		slave_cp_temp = temp / 10;
+
+	chg_info("temp:%d, volt:%d\n", slave_cp_temp, ntc_param.ui_dwvolt);
+
+	return slave_cp_temp;
+}
+#endif
 static int oplus_get_chargeric_temp(void)
 {
 	int chargeric_temp = 0;
@@ -7026,6 +7396,38 @@ static int oplus_chg_set_fixed_pd_config(struct oplus_chg_ic_dev *ic_dev, int vo
 	return rc;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+static int oplus_pps_get_authen_data(void)
+{
+	int i;
+	int ret;
+	struct tcp_dpm_custom_vdm_data vdm_data;
+	struct tcpc_device *tcpc_dev = tcpc_dev_get_by_name("type_c_port0");
+
+	for (i = 0; i < PPS_RANDOM_NUMBER; i++)
+		get_random_bytes(&pps_random[i], 4);
+
+	vdm_data.cnt = 5;
+	vdm_data.wait_resp = true;
+	vdm_data.data[0] = PD_SVDM_HDR(OPLUS_SVID, OPLUS_UVDM_AUTH_CMD);
+	vdm_data.data[1] = pps_random[0];
+	vdm_data.data[2] = pps_random[1];
+	vdm_data.data[3] = pps_random[2];
+	vdm_data.data[4] = pps_random[3];
+	ret = tcpm_dpm_send_custom_vdm(tcpc_dev, &vdm_data, NULL);
+	if (ret == TCPM_SUCCESS) {
+		for (i = 0; i < vdm_data.cnt; i++) {
+			if (i >= 1)
+				pps_adapter_result[i-1] = vdm_data.data[i];
+		}
+	} else {
+		chg_err("tcpm_dpm_send_custom_vdm fail(%d)\n", ret);
+		return 0;
+	}
+
+	return ret;
+}
+#else
 static int oplus_pps_get_authen_data(void)
 {
 	int i;
@@ -7056,6 +7458,7 @@ static int oplus_pps_get_authen_data(void)
 
 	return ret;
 }
+#endif /* LINUX_VERSION_CODE >= 6.6 */
 
 static void tea_encrypt(uint32_t *v, uint32_t *k)
 {
@@ -7137,6 +7540,29 @@ bool oplus_pps_check_authen_data(void)
 	return true;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+static bool oplus_pps_check_adapter_maxi(void)
+{
+	int ret;
+	int i;
+	struct tcp_dpm_custom_vdm_data vdm_data;
+	struct tcpc_device *tcpc_dev = tcpc_dev_get_by_name("type_c_port0");
+
+	vdm_data.cnt = 2;
+	vdm_data.wait_resp = true;
+	vdm_data.data[0] = PD_UVDM_HDR(OPLUS_SVID, OPLUS_UVDM_POWER_CMD);
+	vdm_data.data[1] = 0;
+	for (i = 0; i < vdm_data.cnt; i++)
+		chg_info("send uvdm_data1[%d] = 0x%08x\n", i, vdm_data.data[i]);
+	ret = tcpm_dpm_send_custom_vdm(tcpc_dev, &vdm_data, NULL);
+	if (ret != TCPM_SUCCESS) {
+		chg_info("tcpm_dpm_send_custom_vdm fail(%d)\n", ret);
+		return false;
+	}
+
+	return true;
+}
+#else
 static bool oplus_pps_check_adapter_maxi(void)
 {
 	int ret;
@@ -7158,7 +7584,35 @@ static bool oplus_pps_check_adapter_maxi(void)
 
 	return true;
 }
+#endif /* LINUX_VERSION_CODE >= 6.6 */
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+static int oplus_pps_enable_extended_maxi(void)
+{
+	int i;
+	int ret;
+	struct tcp_dpm_custom_vdm_data vdm_data;
+	struct tcpc_device *tcpc_dev = tcpc_dev_get_by_name("type_c_port0");
+
+	vdm_data.cnt = 2;
+	vdm_data.wait_resp = true;
+	vdm_data.data[0] = PD_UVDM_HDR(OPLUS_SVID, OPLUS_UVDM_EXAPDO_CMD);
+	vdm_data.data[1] = 0;
+	for (i = 0; i < vdm_data.cnt; i++)
+		chg_info("send uvdm_data2[%d] = 0x%08x\n", i, vdm_data.data[i]);
+
+	ret = tcpm_dpm_send_custom_vdm(tcpc_dev, &vdm_data, NULL);
+	if (ret == TCPM_SUCCESS) {
+		for (i = 0; i < vdm_data.cnt; i++)
+			chg_info("receive uvdm_data2[%d] = 0x%08x\n", i, vdm_data.data[i]);
+	} else {
+		chg_info("tcpm_dpm_send_custom_vdm fail(%d)\n", ret);
+		return ret;
+	}
+
+	return ret;
+}
+#else
 static int oplus_pps_enable_extended_maxi(void)
 {
 	int i;
@@ -7184,6 +7638,7 @@ static int oplus_pps_enable_extended_maxi(void)
 
 	return ret;
 }
+#endif /* LINUX_VERSION_CODE >= 6.6 */
 
 static int oplus_pps_get_authentiate(struct oplus_chg_ic_dev *ic_dev)
 {
@@ -7315,6 +7770,64 @@ static void init_pps_key(void)
 #endif /* OPLUS_FEATURE_CHG_BASIC */
 
 #ifdef CONFIG_THERMAL
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+static int master_cp_thermal_read_temp(struct thermal_zone_device *tzd,
+		int *temp)
+{
+	int cp_temp;
+
+	cp_temp = oplus_get_master_cp_temp() * 100; /* thermal zone need 0.001 */
+	*temp = cp_temp;
+
+	return 0;
+}
+
+static struct thermal_zone_device_ops master_cp_temp_tzd_ops = {
+	.get_temp = master_cp_thermal_read_temp,
+};
+
+static int slave_cp_thermal_read_temp(struct thermal_zone_device *tzd,
+		int *temp)
+{
+	int sub_cp_temp;
+
+	sub_cp_temp = oplus_get_slave_cp_temp() * 100; /* thermal zone need 0.001 */
+	*temp = sub_cp_temp;
+
+	return 0;
+}
+
+static struct thermal_zone_device_ops slave_cp_temp_tzd_ops = {
+	.get_temp = slave_cp_thermal_read_temp,
+};
+
+static int register_tz_thermal(struct mtk_charger *info)
+{
+	int ret = 0;
+
+	info->master_cp_temp_tzd = thermal_tripless_zone_device_register("master_cp_temp",
+					NULL, &master_cp_temp_tzd_ops, NULL);
+	if (IS_ERR(info->master_cp_temp_tzd)) {
+		chg_err("master_cp_temp_tzd register fail");
+		return PTR_ERR(info->master_cp_temp_tzd);
+	}
+	ret = thermal_zone_device_enable(info->master_cp_temp_tzd);
+	if (ret)
+		thermal_zone_device_unregister(info->master_cp_temp_tzd);
+
+	info->slave_cp_temp_tzd = thermal_tripless_zone_device_register("slave_cp_temp",
+					NULL, &slave_cp_temp_tzd_ops, NULL);
+	if (IS_ERR(info->slave_cp_temp_tzd)) {
+		chg_err("slave_cp_temp_tzd register fail");
+		return PTR_ERR(info->slave_cp_temp_tzd);
+	}
+	ret = thermal_zone_device_enable(info->slave_cp_temp_tzd);
+	if (ret)
+		thermal_zone_device_unregister(info->slave_cp_temp_tzd);
+
+	return ret;
+}
+#else
 static int cp_thermal_read_temp(struct thermal_zone_device *tzd,
 		int *temp)
 {
@@ -7371,7 +7884,8 @@ static int register_tz_thermal(struct mtk_charger *info)
 
 	return ret;
 }
-#endif
+#endif /* LINUX_VERSION_CODE */
+#endif /* CONFIG_THERMAL */
 
 static int mtk_charger_probe(struct platform_device *pdev)
 {
@@ -7522,6 +8036,20 @@ static int mtk_charger_probe(struct platform_device *pdev)
 
 	info->log_level = CHRLOG_ERROR_LEVEL;
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+	for (i = 0;i < MAX_TA_IDX;i++) {
+		info->adapter_dev[i] =
+			get_adapter_by_name(adapter_type_names[i]);
+		if (!info->adapter_dev[i])
+			chr_err("%s: No %s found\n", __func__, adapter_type_names[i]);
+		else {
+			info->ta_nb[i].nb.notifier_call = notify_adapter_event;
+			info->ta_nb[i].info = info;
+			register_adapter_device_notifier(info->adapter_dev[i],
+					&(info->ta_nb[i].nb));
+		}
+	}
+#else
 	info->pd_adapter = get_adapter_by_name("pd_adapter");
 	if (!info->pd_adapter)
 		chr_err("No pd adapter found\n");
@@ -7530,6 +8058,7 @@ static int mtk_charger_probe(struct platform_device *pdev)
 		register_adapter_device_notifier(info->pd_adapter,
 						 &info->pd_nb);
 	}
+#endif
 
 	info->sc.daemo_nl_sk = netlink_kernel_create(&init_net, NETLINK_CHG, &cfg);
 
@@ -7595,6 +8124,10 @@ static int mtk_charger_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&pinfo->hvdcp_detect_work, oplus_hvdcp_detect_work);
 	pinfo->pd_svooc = false;
 	INIT_DELAYED_WORK(&pinfo->detach_clean_work, oplus_detach_clean_work);
+
+	pinfo->pd_chg_volt = VBUS_5V;
+	INIT_DELAYED_WORK(&pinfo->sourcecap_done_work, oplus_sourcecap_done_work);
+	INIT_DELAYED_WORK(&pinfo->charger_suspend_recovery_work, oplus_charger_suspend_recovery_work);
 
 	if (oplus_mtk_ic_register(&pdev->dev, pinfo) != 0)
 		goto reg_ic_err;

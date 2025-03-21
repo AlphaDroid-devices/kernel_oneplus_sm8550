@@ -242,6 +242,7 @@ int mode_switch_health(struct touchpanel_data *ts, work_mode mode, int flag)
 			   (MODE_HEADSET == mode) ? "mode_headset_switch_fail" :
 			   (MODE_WIRELESS_CHARGE == mode) ? "mode_wireless_charge_switch_fail" :
 			   (MODE_PEN_SCAN == mode) ? "mode_pen_scan_switch_fail" :
+			   (MODE_AOD == mode) ? "mode_aod_switch_fail" :
 			   (MODE_PEN_CTL == mode) ? "mode_pen_ctl_switch_fail" : "mode_others_switch_fail");
 	}
 
@@ -295,7 +296,28 @@ void operate_mode_switch(struct touchpanel_data *ts)
 		}
 
 		if (ts->black_gesture_support) {
-			mode_switch_health(ts, MODE_GESTURE, false);
+			if (ts->aod_gesture_support) {
+				TP_INFO(ts->tp_index, "%s : in_aod_flag = %d ,out_aod_flag = %d\n", __func__, ts->in_aod_flag, ts->out_aod_flag);
+				if (ts->in_aod_flag && ts->out_aod_flag) {
+					TP_INFO(ts->tp_index, "TP out mode aod ERROR\n");
+					mode_switch_health(ts, MODE_AOD, false);
+					ts->in_aod_flag = false;
+					ts->out_aod_flag = false;
+				} else if (ts->in_aod_flag && !ts->out_aod_flag) {
+					TP_INFO(ts->tp_index, "TP in mode aod start\n");
+					mode_switch_health(ts, MODE_AOD, true);
+					ts->is_suspended = 1;
+					ts->in_aod_flag = false;
+				} else if (ts->out_aod_flag && !ts->in_aod_flag) {
+					TP_INFO(ts->tp_index, "TP out mode aod start\n");
+					mode_switch_health(ts, MODE_AOD, false);
+					ts->out_aod_flag = false;
+				} else {
+					mode_switch_health(ts, MODE_GESTURE, false);
+				}
+			} else {
+				mode_switch_health(ts, MODE_GESTURE, false);
+			}
 		}
 
 		if (ts->fw_edge_limit_support) {
@@ -307,7 +329,7 @@ void operate_mode_switch(struct touchpanel_data *ts)
 		}
 
 		if (ts->glove_mode_v2_support) {
-			mode_switch_health(ts, MODE_GLOVE, ts->glove_enable);
+			mode_switch_health(ts, MODE_GLOVE, ts->glove_enable && (!ts->pocket_prevent_mode));
 		}
 
 		if (ts->glove_mode_support || ts->leather_cover_mode_support) {
@@ -350,7 +372,7 @@ void operate_mode_switch(struct touchpanel_data *ts)
 		}
 
 		if (ts->waterproof_support) {
-			mode_switch_health(ts, MODE_WATERPROOF, ts->waterproof);
+			mode_switch_health(ts, MODE_WATERPROOF, ts->waterproof & ~(0x1 << WATERPROOF_RUS_BIT));
 		}
 
 		mode_switch_health(ts, MODE_NORMAL, true);
@@ -1255,6 +1277,10 @@ static inline void tp_work_func(struct touchpanel_data *ts)
 
 	if (!ts->ts_ops->trigger_reason) {
 		TP_INFO(ts->tp_index, "not support ts_ops->trigger_reason callback\n");
+		return;
+	}
+
+	if (ts->touch_event_diasble) {
 		return;
 	}
 
@@ -2236,6 +2262,7 @@ static int init_parse_dts(struct device *dev, struct touchpanel_data *ts)
 	ts->suspend_work_support = of_property_read_bool(np, "suspend_work_support");
 	ts->fp_disable_after_resume = of_property_read_bool(np, "fp_disable_after_resume");
 	ts->edge_pull_out_support = of_property_read_bool(np, "edge_pull_out_support");
+	ts->lpwg_fw_support = of_property_read_bool(np, "lpwg_fw_support");
 	ts->diaphragm_touch_support = of_property_read_bool(np, "diaphragm_touch_support");
 
 #ifdef CONFIG_TOUCHPANEL_TRUSTED_TOUCH
@@ -2251,7 +2278,8 @@ static int init_parse_dts(struct device *dev, struct touchpanel_data *ts)
 	if (!ts->sportify_aod_gesture_support) {
 		TP_INFO(ts->tp_index, "not support sportify_aod_gesture\n");
 	}
-
+	ts->aod_gesture_support = of_property_read_bool(np,
+						 "aod_gesture_support");
 	ts->regulator_count_not_support = of_property_read_bool(np, "regulator_count_not_support");
 
 	ts->force_bus_ready_support = of_property_read_bool(np, "force_bus_ready_support");
@@ -4169,6 +4197,7 @@ int register_common_touch_device(struct touchpanel_data *pdata)
 	ts->palm_to_sleep_enable = 0;
 	ts->tp_ic_touch_num = 0;
 	ts->last_tp_ic_touch_num = 0;
+	ts->touch_event_diasble = false;
 	for (i = 0; i < MAX_FINGER_NUM; i++) {
 		ts->last_x_y_point[i].x = 0;
 		ts->last_x_y_point[i].y = 0;
@@ -4618,8 +4647,7 @@ static void tp_resume(struct device *dev)
 	struct device_node *chip_np = NULL;
 	struct device_node *src_chip_np = NULL;
 	TP_INFO(ts->tp_index, "%s start.\n", __func__);
-
-	if (!ts->is_suspended) {
+	if (!ts->is_suspended && (!ts->in_aod_flag && !ts->out_aod_flag)) {
 		TP_INFO(ts->tp_index, "%s: do not resume twice.\n", __func__);
 		goto NO_NEED_RESUME;
 	}
@@ -4635,7 +4663,7 @@ static void tp_resume(struct device *dev)
 	}
 
 	/*free irq at first*/
-	if (!(ts->tp_ic_type == TYPE_TDDI_TCM && ts->is_noflash_ic)) {
+	if (!(ts->tp_ic_type == TYPE_TDDI_TCM && ts->is_noflash_ic)  && !ts->out_aod_flag) {
 		if (ts->int_mode == UNBANNABLE) {
 			mutex_lock(&ts->mutex);
 		}
@@ -4753,7 +4781,9 @@ static void speedup_resume(struct work_struct *work)
 		ts->fp_quick_start_data = 0;
 		ts->fp_enable = 0;
 	}
-
+	if (ts->aod_gesture_support) {
+			ts->is_suspended = 0;
+	}
 	operate_mode_switch(ts);
 
 	if (ts->esd_handle_support) {
@@ -4761,7 +4791,7 @@ static void speedup_resume(struct work_struct *work)
 	}
 
 	/*step6:Request irq again*/
-	if (!(ts->tp_ic_type == TYPE_TDDI_TCM && ts->is_noflash_ic)) {
+	if (!(ts->tp_ic_type == TYPE_TDDI_TCM && ts->is_noflash_ic) && !ts->out_aod_flag) {
 		if (ts->int_mode == BANNABLE) {
 			tp_register_irq_func(ts);
 		}
@@ -4893,6 +4923,8 @@ static void lcd_other_event(int *blank, struct touchpanel_data *ts)
 		tp_control_irq_state(1, ts->tp_index);
 	} else if (*blank == LCD_CTL_IRQ_OFF) {
 		tp_control_irq_state(0, ts->tp_index);
+	} else if (*blank == LCD_CTL_AOD_OFF) {
+		ts->out_aod_flag = true;
 	}
 };
 
@@ -4991,6 +5023,9 @@ static int ts_mtk_drm_notifier_callback(struct notifier_block *nb,
 			}
 			lcd_on_early_event(ts);
 		} else if (*blank == MTK_DISP_BLANK_POWERDOWN) {
+			if (ts->aod_gesture_support) {
+				ts->is_suspended = 0;
+			}
 			if (ts->speedup_resume_wq) {
 				flush_workqueue(ts->speedup_resume_wq);		/*wait speedup_resume_wq done*/
 			}
@@ -5003,6 +5038,12 @@ static int ts_mtk_drm_notifier_callback(struct notifier_block *nb,
 		} else if (*blank == MTK_DISP_BLANK_POWERDOWN) {
 			lcd_off_event(ts);
 		}
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0))
+
+		else if (*blank == MTK_DISP_EVENT_FOR_AOD) {
+			ts->in_aod_flag = true;
+		}
+#endif
 	break;
 	default:
 		TP_INFO(ts->tp_index, "nuknown event :%lu\n", event);

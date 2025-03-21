@@ -1707,6 +1707,8 @@ static int oplus_pps_variables_init(struct oplus_pps_chip *chip, int status)
 	chip->ask_charger_current = 0;
 	chip->data.cp_master_ibus = 0;
 	chip->data.cp_slave_ibus = 0;
+	chip->data.slave_trouble_count = 0;
+	chip->data.ibus_trouble_count = 0;
 	chip->cp.master_enable = false;
 	chip->cp.slave_enable = false;
 	chip->cp.slave_b_enable = false;
@@ -4808,7 +4810,9 @@ static void oplus_pps_stop_work(struct work_struct *work)
 	oplus_pps_hardware_init();
 	oplus_pps_set_chg_status(PPS_CHARGE_END);
 
-	if (chip->pps_stop_status == PPS_STOP_VOTER_MMI_TEST) {
+	if ((chip->pps_stop_status == PPS_STOP_VOTER_MMI_TEST) || (!oplus_chg_get_mmi_value())) {
+		if (oplus_chg_get_stop_chg() == 1)
+			oplus_chg_unsuspend_charger();
 		chip->pps_status = OPLUS_PPS_STATUS_START;
 	} else if ((chip->pps_stop_status == PPS_STOP_VOTER_FULL) &&
 		   (chip->pps_adapter_type == PPS_ADAPTER_OPLUS_V2 ||
@@ -4825,7 +4829,7 @@ static void oplus_pps_stop_work(struct work_struct *work)
 		oplus_chg_unsuspend_charger();
 		oplus_chg_disable_charge();
 		chip->pps_status = OPLUS_PPS_STATUS_START;
-	} else {
+	} else if (oplus_chg_get_mmi_value()) {
 		oplus_chg_unsuspend_charger();
 		oplus_chg_enable_charge();
 		chip->pps_status = OPLUS_PPS_STATUS_START;
@@ -4917,6 +4921,18 @@ int oplus_pps_get_adsp_authenticate(void)
 	return auth_result;
 }
 
+void oplus_pps_shutdown(void)
+{
+	struct oplus_pps_chip *chip = &g_pps_chip;
+
+	if (chip == NULL) {
+		chg_err("device not found\n");
+		return;
+	}
+
+	schedule_delayed_work(&chip->pps_stop_work, 0);
+}
+
 int oplus_pps_start(int authen)
 {
 	struct oplus_pps_chip *chip = &g_pps_chip;
@@ -4992,6 +5008,7 @@ int oplus_pps_get_support_type(void)
 		return PPS_SUPPORT_NOT;
 	}
 }
+EXPORT_SYMBOL(oplus_pps_get_support_type);
 
 bool oplus_support_pps(void)
 {
