@@ -92,6 +92,9 @@ else
 ifneq ($(strip $(CONFIG_KPROBES)),y)
 $(error KSU requires Kprobes; enable it (defconfig))
 endif
+ifneq ($(strip $(CONFIG_EXT4_FS)),y)
+$(error KSU requires Ext4_fs; enable it (defconfig))
+endif
 endif
 
 # Keep a new line here!! Because someone may append config

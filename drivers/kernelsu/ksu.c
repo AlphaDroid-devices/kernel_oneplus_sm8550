@@ -116,11 +116,12 @@ int __init kernelsu_init(void)
 
 		ksu_avc_spoof_init();
 
+		ksu_throne_tracker_init();
+
 #ifdef CONFIG_KSU_SUSFS
 		susfs_init();
 #endif // #ifdef CONFIG_KSU_SUSFS
 
-		ksu_throne_tracker_init();
 		ksu_observer_init();
 		ksu_file_wrapper_init();
 
@@ -169,13 +170,10 @@ void kernelsu_exit(void)
 
 	ksu_observer_exit();
 
-	if (!ksu_late_loaded) {
 #ifndef CONFIG_KSU_SUSFS
+	if (!ksu_late_loaded)
 		ksu_ksud_exit();
-#endif // #ifndef CONFIG_KSU_SUSFS
-	}
 
-#ifndef CONFIG_KSU_SUSFS
 	ksu_syscall_hook_manager_exit();
 #endif // #ifndef CONFIG_KSU_SUSFS
 
